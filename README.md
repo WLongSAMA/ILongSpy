@@ -1,8 +1,10 @@
 # ILSpy [![NuGet](https://img.shields.io/nuget/v/ICSharpCode.Decompiler.svg)](https://nuget.org/packages/ICSharpCode.Decompiler) ![Build ILSpy](https://github.com/icsharpcode/ILSpy/workflows/Build%20ILSpy/badge.svg?branch=master) [![Mastodon](https://img.shields.io/badge/dynamic/json?label=Mastodon&query=totalItems&url=https%3A%2F%2Fhachyderm.io%2Fusers%2Filspy%2Ffollowers.json&logo=mastodon&style=flat-square)](https://hachyderm.io/@ilspy) [![Bluesky](https://img.shields.io/badge/Bluesky-0285FF?logo=bluesky&logoColor=fff)](https://bsky.app/profile/ilspy.bsky.social) [![ILSpy VS extension](https://img.shields.io/badge/VS%20Extension-ILSpy-blue.svg)](https://visualstudiogallery.msdn.microsoft.com/8ef1d688-f80c-4380-8004-2ec7f814e7de) 
 
-ILSpy is the open-source .NET assembly browser and decompiler.
+ILSpy 是一款开源的 .NET 程序集浏览器和反编译器。
 
-Download: [latest release](https://github.com/icsharpcode/ILSpy/releases) | [latest CI build (master)](https://github.com/icsharpcode/ILSpy/actions?query=workflow%3A%22Build+ILSpy%22+branch%3Amaster+is%3Asuccess+event%3Apush) | [Microsoft Store (RTM versions only)](https://apps.microsoft.com/store/detail/ilspy-fresh/XP8C26VDWLP4T4)
+中文版本下载： [latest release](https://github.com/WLongSAMA/ILongSpy/releases) | [latest CI build (master)](https://github.com/WLongSAMA/ILongSpy/actions?query=workflow%3A%22Build+ILSpy%22+branch%3Amaster+is%3Asuccess+event%3Apush)
+
+英文版本下载： [latest release](https://github.com/icsharpcode/ILSpy/releases) | [latest CI build (master)](https://github.com/icsharpcode/ILSpy/actions?query=workflow%3A%22Build+ILSpy%22+branch%3Amaster+is%3Asuccess+event%3Apush) | [Microsoft Store (RTM versions only)](https://apps.microsoft.com/store/detail/ilspy-fresh/XP8C26VDWLP4T4)
 
 Decompiler Frontends
 -------
