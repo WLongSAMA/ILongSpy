@@ -19,6 +19,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
 using System.Xml.Linq;
@@ -27,29 +28,78 @@ namespace ICSharpCode.ILSpy.Updates
 {
 	internal static class UpdateService
 	{
-		static readonly Uri UpdateUrl = new Uri("https://ilspy.net/updates.xml");
+		const string ReleaseTagBaseUrl = "https://github.com/icsharpcode/ILSpy/releases/tag/";
+		static readonly Uri UpdateUrl = new Uri("https://icsharpcode.github.io/ILSpy/updates.xml");
 		const string band = "stable";
 
 		public static AvailableVersionInfo LatestAvailableVersion { get; private set; }
 
 		public static async Task<AvailableVersionInfo> GetLatestVersionAsync()
 		{
-			var client = new HttpClient(new HttpClientHandler() {
+			using var client = new HttpClient(new HttpClientHandler() {
 				UseProxy = true,
-				UseDefaultCredentials = true,
+				UseDefaultCredentials = true
 			});
-			string data = await client.GetStringAsync(UpdateUrl).ConfigureAwait(false);
+
+			return await GetLatestVersionAsync(client, UpdateUrl).ConfigureAwait(false);
+		}
+
+		internal static async Task<AvailableVersionInfo> GetLatestVersionAsync(HttpClient client, Uri updateUrl)
+		{
+			// Issue #3707: Remove 301 redirect logic once ilspy.net CNAME gone
+			string data = await GetWithRedirectsAsync(client, updateUrl).ConfigureAwait(false);
 
 			XDocument doc = XDocument.Load(new StringReader(data));
-			var bands = doc.Root.Elements("band");
+			var bands = doc.Root.Elements("band").ToList();
 			var currentBand = bands.FirstOrDefault(b => (string)b.Attribute("id") == band) ?? bands.First();
 			Version version = new Version((string)currentBand.Element("latestVersion"));
-			string url = (string)currentBand.Element("downloadUrl");
-			if (!(url.StartsWith("http://", StringComparison.Ordinal) || url.StartsWith("https://", StringComparison.Ordinal)))
-				url = null; // don't accept non-urls
+
+			string url = null;
+			string releaseTag = (string)currentBand.Element("releaseTag");
+
+			if (releaseTag != null)
+			{
+				url = ReleaseTagBaseUrl + releaseTag;
+
+				// Prevent path traversal: normalize the URI and verify it still starts with the expected base
+				if (!new Uri(url).AbsoluteUri.StartsWith(ReleaseTagBaseUrl, StringComparison.Ordinal))
+					url = null;
+			}
+			else
+			{
+				// Issue #3707: Remove else branch fallback logic once releaseTag version has shipped + 6 months
+				url = (string)currentBand.Element("downloadUrl");
+
+				// Prevent arbitrary URLs: verify it starts with the expected base
+				if (!new Uri(url).AbsoluteUri.StartsWith(ReleaseTagBaseUrl, StringComparison.Ordinal))
+					url = null;
+			}
 
 			LatestAvailableVersion = new AvailableVersionInfo { Version = version, DownloadUrl = url };
 			return LatestAvailableVersion;
+		}
+
+		static async Task<string> GetWithRedirectsAsync(HttpClient client, Uri uri, int maxRedirects = 5)
+		{
+			for (int i = 0; i <= maxRedirects; i++)
+			{
+				using var response = await client.GetAsync(uri).ConfigureAwait(false);
+
+				if (response.StatusCode is HttpStatusCode.MovedPermanently
+					or HttpStatusCode.Found
+					or HttpStatusCode.TemporaryRedirect
+					or HttpStatusCode.PermanentRedirect)
+				{
+					var location = response.Headers.Location;
+					uri = location?.IsAbsoluteUri == true ? location : new Uri(uri, location);
+					continue;
+				}
+
+				response.EnsureSuccessStatusCode();
+				return await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+			}
+
+			throw new HttpRequestException($"Exceeded maximum redirect limit ({maxRedirects}).");
 		}
 
 		/// <summary>

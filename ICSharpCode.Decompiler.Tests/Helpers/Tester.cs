@@ -72,8 +72,9 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 		ReferenceUnsafe = 0x10000,
 		CheckForOverflowUnderflow = 0x20000,
 		ProcessXmlDoc = 0x40000,
+		UseRoslyn4_14_0 = 0x80000,
 		UseMcsMask = UseMcs2_6_4 | UseMcs5_23,
-		UseRoslynMask = UseRoslyn1_3_2 | UseRoslyn2_10_0 | UseRoslyn3_11_0 | UseRoslynLatest
+		UseRoslynMask = UseRoslyn1_3_2 | UseRoslyn2_10_0 | UseRoslyn3_11_0 | UseRoslyn4_14_0 | UseRoslynLatest
 	}
 
 	[Flags]
@@ -93,6 +94,10 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 
 	public static partial class Tester
 	{
+		public const string CurrentNetCoreVersion = "11.0";
+		public const string CurrentNetCoreAppVersion = ".NETCoreApp,Version=v11.0";
+		public const string CurrentNetCoreRefAsmVersion = "11.0.0-preview.3.26207.106";
+
 		public static readonly string TesterPath;
 		public static readonly string TestCasePath;
 
@@ -108,16 +113,16 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 			TesterPath = Path.GetDirectoryName(typeof(Tester).Assembly.Location);
 			TestCasePath = Path.Combine(TesterPath, "../../../../TestCases");
 #if DEBUG
-			testRunnerBasePath = Path.Combine(TesterPath, "../../../../../ICSharpCode.Decompiler.TestRunner/bin/Debug/net10.0");
+			testRunnerBasePath = Path.Combine(TesterPath, $"../../../../../ICSharpCode.Decompiler.TestRunner/bin/Debug/net{CurrentNetCoreVersion}");
 #else
-			testRunnerBasePath = Path.Combine(TesterPath, "../../../../../ICSharpCode.Decompiler.TestRunner/bin/Release/net10.0");
+			testRunnerBasePath = Path.Combine(TesterPath, $"../../../../../ICSharpCode.Decompiler.TestRunner/bin/Release/net{CurrentNetCoreVersion}");
 #endif
 			// To parse: <Project><ItemGroup><PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.8.0-3.final" />
 			packagesPropsFile = Path.Combine(TesterPath, "../../../../../Directory.Packages.props");
 			roslynLatestVersion = ((IEnumerable<object>)(XDocument
 				.Load(packagesPropsFile)
-				.XPathEvaluate("//Project//ItemGroup//PackageVersion[@Include='Microsoft.CodeAnalysis.CSharp']/@Version")))
-				.OfType<XAttribute>()
+				.XPathEvaluate("//Project//PropertyGroup//RoslynVersion")))
+				.OfType<XElement>()
 				.Single()
 				.Value;
 
@@ -131,11 +136,13 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 			await roslynToolset.Fetch("1.3.2", "Microsoft.Net.Compilers", "tools").ConfigureAwait(false);
 			await roslynToolset.Fetch("2.10.0", "Microsoft.Net.Compilers", "tools").ConfigureAwait(false);
 			await roslynToolset.Fetch("3.11.0").ConfigureAwait(false);
+			await roslynToolset.Fetch("4.14.0").ConfigureAwait(false);
 			await roslynToolset.Fetch(roslynLatestVersion).ConfigureAwait(false);
 
 			await vswhereToolset.Fetch().ConfigureAwait(false);
 			await RefAssembliesToolset.Fetch("5.0.0", sourcePath: "ref/net5.0").ConfigureAwait(false);
-			await RefAssembliesToolset.Fetch("10.0.0", sourcePath: "ref/net10.0").ConfigureAwait(false);
+			await RefAssembliesToolset.Fetch("9.0.0", sourcePath: "ref/net9.0").ConfigureAwait(false);
+			await RefAssembliesToolset.Fetch(CurrentNetCoreRefAsmVersion, sourcePath: $"ref/net{CurrentNetCoreVersion}").ConfigureAwait(false);
 
 #if DEBUG
 			await BuildTestRunner("win-x86", "Debug").ConfigureAwait(false);
@@ -341,7 +348,8 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 			};
 
 		static readonly Dictionary<string, Lazy<string>> targetFrameworkAttributeSnippetFiles = new() {
-			{ ".NETCoreApp,Version=v10.0", new Lazy<string>(() => GetTargetFrameworkAttributeSnippetFile(".NETCoreApp,Version=v10.0")) },
+			{ CurrentNetCoreAppVersion, new Lazy<string>(() => GetTargetFrameworkAttributeSnippetFile(CurrentNetCoreAppVersion)) },
+			{ ".NETCoreApp,Version=v9.0", new Lazy<string>(() => GetTargetFrameworkAttributeSnippetFile(".NETCoreApp,Version=v9.0")) },
 			{ ".NETCoreApp,Version=v5.0", new Lazy<string>(() => GetTargetFrameworkAttributeSnippetFile(".NETCoreApp,Version=v5.0")) },
 			{ ".NETCoreApp,Version=v2.2", new Lazy<string>(() => GetTargetFrameworkAttributeSnippetFile(".NETCoreApp,Version=v2.2")) },
 		};
@@ -424,6 +432,7 @@ namespace System.Runtime.CompilerServices
 				preprocessorSymbols.Add("VB14");
 				if (flags.HasFlag(CompilerOptions.UseRoslyn2_10_0)
 					|| flags.HasFlag(CompilerOptions.UseRoslyn3_11_0)
+					|| flags.HasFlag(CompilerOptions.UseRoslyn4_14_0)
 					|| flags.HasFlag(CompilerOptions.UseRoslynLatest))
 				{
 					preprocessorSymbols.Add("ROSLYN2");
@@ -434,6 +443,7 @@ namespace System.Runtime.CompilerServices
 					preprocessorSymbols.Add("VB15");
 				}
 				if (flags.HasFlag(CompilerOptions.UseRoslyn3_11_0)
+					|| flags.HasFlag(CompilerOptions.UseRoslyn4_14_0)
 					|| flags.HasFlag(CompilerOptions.UseRoslynLatest))
 				{
 					if (!flags.HasFlag(CompilerOptions.TargetNet40))
@@ -445,7 +455,8 @@ namespace System.Runtime.CompilerServices
 					preprocessorSymbols.Add("CS90");
 					preprocessorSymbols.Add("VB16");
 				}
-				if (flags.HasFlag(CompilerOptions.UseRoslynLatest))
+				if (flags.HasFlag(CompilerOptions.UseRoslyn4_14_0)
+					|| flags.HasFlag(CompilerOptions.UseRoslynLatest))
 				{
 					if (!flags.HasFlag(CompilerOptions.TargetNet40))
 					{
@@ -453,13 +464,23 @@ namespace System.Runtime.CompilerServices
 						preprocessorSymbols.Add("NET70");
 						preprocessorSymbols.Add("NET80");
 						preprocessorSymbols.Add("NET90");
-						preprocessorSymbols.Add("NET100");
 					}
 					preprocessorSymbols.Add("ROSLYN4");
 					preprocessorSymbols.Add("CS100");
 					preprocessorSymbols.Add("CS110");
 					preprocessorSymbols.Add("CS120");
 					preprocessorSymbols.Add("CS130");
+				}
+				if (flags.HasFlag(CompilerOptions.UseRoslynLatest))
+				{
+					if (!flags.HasFlag(CompilerOptions.TargetNet40))
+					{
+						preprocessorSymbols.Add("NET100");
+						preprocessorSymbols.Add("NET110");
+					}
+					preprocessorSymbols.Add("ROSLYN5");
+					preprocessorSymbols.Add("CS140");
+					preprocessorSymbols.Add("CS150");
 				}
 			}
 			else if ((flags & CompilerOptions.UseMcsMask) != 0)
@@ -520,7 +541,8 @@ namespace System.Runtime.CompilerServices
 					CompilerOptions.UseRoslyn1_3_2 => ("1.3.2", "6", null),
 					CompilerOptions.UseRoslyn2_10_0 => ("2.10.0", "latest", targetNet40 ? null : ".NETCoreApp,Version=v2.2"),
 					CompilerOptions.UseRoslyn3_11_0 => ("3.11.0", "latest", targetNet40 ? null : ".NETCoreApp,Version=v5.0"),
-					_ => (roslynLatestVersion, flags.HasFlag(CompilerOptions.Preview) ? "preview" : "latest", targetNet40 ? null : ".NETCoreApp,Version=v10.0")
+					CompilerOptions.UseRoslyn4_14_0 => ("4.14.0", "latest", targetNet40 ? null : ".NETCoreApp,Version=v9.0"),
+					_ => (roslynLatestVersion, flags.HasFlag(CompilerOptions.Preview) ? "preview" : "latest", targetNet40 ? null : CurrentNetCoreAppVersion)
 				};
 
 				var cscPath = roslynToolset.GetCSharpCompiler(roslynVersion);
@@ -735,6 +757,7 @@ namespace System.Runtime.CompilerServices
 					CompilerOptions.UseRoslyn1_3_2 => CSharp.LanguageVersion.CSharp6,
 					CompilerOptions.UseRoslyn2_10_0 => CSharp.LanguageVersion.CSharp7_3,
 					CompilerOptions.UseRoslyn3_11_0 => CSharp.LanguageVersion.CSharp9_0,
+					CompilerOptions.UseRoslyn4_14_0 => CSharp.LanguageVersion.CSharp13_0,
 					_ => cscOptions.HasFlag(CompilerOptions.Preview) ? CSharp.LanguageVersion.Latest : CSharp.LanguageVersion.CSharp14_0,
 				};
 				DecompilerSettings settings = new(langVersion) {
@@ -770,7 +793,7 @@ namespace System.Runtime.CompilerServices
 			}
 
 			var compilation = CSharpCompilation.Create(Path.GetFileNameWithoutExtension(assemblyName),
-				syntaxTrees, coreDefaultReferences.Select(r => MetadataReference.CreateFromFile(Path.Combine(RefAssembliesToolset.GetPath(".NETCoreApp,Version=v10.0"), r))),
+				syntaxTrees, coreDefaultReferences.Select(r => MetadataReference.CreateFromFile(Path.Combine(RefAssembliesToolset.GetPath(CurrentNetCoreAppVersion), r))),
 				new CSharpCompilationOptions(
 					OutputKind.DynamicallyLinkedLibrary,
 					platform: Platform.AnyCpu,
@@ -811,6 +834,8 @@ namespace System.Runtime.CompilerServices
 				suffix += ".roslyn2";
 			if ((cscOptions & CompilerOptions.UseRoslyn3_11_0) != 0)
 				suffix += ".roslyn3";
+			if ((cscOptions & CompilerOptions.UseRoslyn4_14_0) != 0)
+				suffix += ".roslyn4";
 			if ((cscOptions & CompilerOptions.UseRoslynLatest) != 0)
 				suffix += ".roslyn";
 			if ((cscOptions & CompilerOptions.UseMcs2_6_4) != 0)
