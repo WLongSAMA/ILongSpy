@@ -1,0 +1,1231 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <!--
+    Microsoft ResX Schema
+
+    Version 2.0
+
+    The primary goals of this format is to allow a simple XML format
+    that is mostly human readable. The generation and parsing of the
+    various data types are done through the TypeConverter classes
+    associated with the data types.
+
+    Example:
+
+    ... ado.net/XML headers & schema ...
+    <resheader name="resmimetype">text/microsoft-resx</resheader>
+    <resheader name="version">2.0</resheader>
+    <resheader name="reader">System.Resources.ResXResourceReader, System.Windows.Forms, ...</resheader>
+    <resheader name="writer">System.Resources.ResXResourceWriter, System.Windows.Forms, ...</resheader>
+    <data name="Name1"><value>this is my long string</value><comment>this is a comment</comment></data>
+    <data name="Color1" type="System.Drawing.Color, System.Drawing">Blue</data>
+    <data name="Bitmap1" mimetype="application/x-microsoft.net.object.binary.base64">
+        <value>[base64 mime encoded serialized .NET Framework object]</value>
+    </data>
+    <data name="Icon1" type="System.Drawing.Icon, System.Drawing" mimetype="application/x-microsoft.net.object.bytearray.base64">
+        <value>[base64 mime encoded string representing a byte array form of the .NET Framework object]</value>
+        <comment>This is a comment</comment>
+    </data>
+
+    There are any number of "resheader" rows that contain simple
+    name/value pairs.
+
+    Each data row contains a name, and value. The row also contains a
+    type or mimetype. Type corresponds to a .NET class that support
+    text/value conversion through the TypeConverter architecture.
+    Classes that don't support this are serialized and stored with the
+    mimetype set.
+
+    The mimetype is used for serialized objects, and tells the
+    ResXResourceReader how to depersist the object. This is currently not
+    extensible. For a given mimetype the value must be set accordingly:
+
+    Note - application/x-microsoft.net.object.binary.base64 is the format
+    that the ResXResourceWriter will generate, however the reader can
+    read any of the formats listed below.
+
+    mimetype: application/x-microsoft.net.object.binary.base64
+    value   : The object must be serialized with
+            : System.Runtime.Serialization.Formatters.Binary.BinaryFormatter
+            : and then encoded with base64 encoding.
+
+    mimetype: application/x-microsoft.net.object.soap.base64
+    value   : The object must be serialized with
+            : System.Runtime.Serialization.Formatters.Soap.SoapFormatter
+            : and then encoded with base64 encoding.
+
+    mimetype: application/x-microsoft.net.object.bytearray.base64
+    value   : The object must be serialized into a byte array
+            : using a System.ComponentModel.TypeConverter
+            : and then encoded with base64 encoding.
+    -->
+  <xsd:schema id="root" xmlns="" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:msdata="urn:schemas-microsoft-com:xml-msdata">
+    <xsd:import namespace="http://www.w3.org/XML/1998/namespace" />
+    <xsd:element name="root" msdata:IsDataSet="true">
+      <xsd:complexType>
+        <xsd:choice maxOccurs="unbounded">
+          <xsd:element name="metadata">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" />
+              </xsd:sequence>
+              <xsd:attribute name="name" use="required" type="xsd:string" />
+              <xsd:attribute name="type" type="xsd:string" />
+              <xsd:attribute name="mimetype" type="xsd:string" />
+              <xsd:attribute ref="xml:space" />
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="assembly">
+            <xsd:complexType>
+              <xsd:attribute name="alias" type="xsd:string" />
+              <xsd:attribute name="name" type="xsd:string" />
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="data">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" msdata:Ordinal="1" />
+                <xsd:element name="comment" type="xsd:string" minOccurs="0" msdata:Ordinal="2" />
+              </xsd:sequence>
+              <xsd:attribute name="name" type="xsd:string" use="required" msdata:Ordinal="1" />
+              <xsd:attribute name="type" type="xsd:string" msdata:Ordinal="3" />
+              <xsd:attribute name="mimetype" type="xsd:string" msdata:Ordinal="4" />
+              <xsd:attribute ref="xml:space" />
+            </xsd:complexType>
+          </xsd:element>
+          <xsd:element name="resheader">
+            <xsd:complexType>
+              <xsd:sequence>
+                <xsd:element name="value" type="xsd:string" minOccurs="0" msdata:Ordinal="1" />
+              </xsd:sequence>
+              <xsd:attribute name="name" type="xsd:string" use="required" />
+            </xsd:complexType>
+          </xsd:element>
+        </xsd:choice>
+      </xsd:complexType>
+    </xsd:element>
+  </xsd:schema>
+  <resheader name="resmimetype">
+    <value>text/microsoft-resx</value>
+  </resheader>
+  <resheader name="version">
+    <value>2.0</value>
+  </resheader>
+  <resheader name="reader">
+    <value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <resheader name="writer">
+    <value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+  </resheader>
+  <data name="About" xml:space="preserve">
+    <value>關於</value>
+  </data>
+  <data name="AddPreconfiguredList" xml:space="preserve">
+    <value>新增預先設定的清單...</value>
+  </data>
+  <data name="AddShellIntegration" xml:space="preserve">
+    <value>新增殼層整合</value>
+  </data>
+  <data name="AddShellIntegrationMessage" xml:space="preserve">
+    <value>這將在登錄的「HKCU\Software\Classes\dllfile\shell\Open with ILSpy\command」和「HKCU\Software\Classes\exefile\shell\Open with ILSpy\command」處新增「{0}」，以便從檔案總管快顯功能表開啟 .dll 和 .exe 檔案。
+
+是否要繼續？</value>
+  </data>
+  <data name="AllFiles" xml:space="preserve">
+    <value>|所有檔案|*.*</value>
+  </data>
+  <data name="AllowMultipleInstances" xml:space="preserve">
+    <value>允許多個執行個體</value>
+  </data>
+  <data name="AlwaysBraces" xml:space="preserve">
+    <value>一律使用大括號</value>
+  </data>
+  <data name="Analyze" xml:space="preserve">
+    <value>分析</value>
+  </data>
+  <data name="Assemblies" xml:space="preserve">
+    <value>組件</value>
+  </data>
+  <data name="Assembly" xml:space="preserve">
+    <value>組件</value>
+  </data>
+  <data name="AssemblySaveCodeDirectoryNotEmpty" xml:space="preserve">
+    <value>目錄不是空的。檔案將會被覆寫。
+是否確定要繼續？</value>
+  </data>
+  <data name="AssemblySaveCodeDirectoryNotEmptyTitle" xml:space="preserve">
+    <value>專案目錄不是空的</value>
+  </data>
+  <data name="AutomaticallyCheckUpdatesEveryWeek" xml:space="preserve">
+    <value>每週自動檢查更新</value>
+  </data>
+  <data name="Back" xml:space="preserve">
+    <value>後退</value>
+  </data>
+  <data name="BaseTypes" xml:space="preserve">
+    <value>基底類型</value>
+  </data>
+  <data name="C_lone" xml:space="preserve">
+    <value>複製(_L)</value>
+  </data>
+  <data name="Cancel" xml:space="preserve">
+    <value>取消</value>
+  </data>
+  <data name="CannotAnalyzeMissingRef" xml:space="preserve">
+    <value>無法解析實體。無法分析來自遺漏組件參考的實體。請新增遺漏的參考後再試一次。</value>
+  </data>
+  <data name="CannotCreatePDBFile" xml:space="preserve">
+    <value>無法為 {0} 建立 PDB 檔案，因為遺漏 PE 偵錯目錄類型「CodeView」。</value>
+  </data>
+  <data name="CheckAgain" xml:space="preserve">
+    <value>再次檢查</value>
+  </data>
+  <data name="CheckUpdates" xml:space="preserve">
+    <value>檢查更新</value>
+  </data>
+  <data name="Checking" xml:space="preserve">
+    <value>正在檢查...</value>
+  </data>
+  <data name="ClearAssemblyList" xml:space="preserve">
+    <value>清除組件清單</value>
+  </data>
+  <data name="Close" xml:space="preserve">
+    <value>關閉</value>
+  </data>
+  <data name="CloseAllButThisTab" xml:space="preserve">
+    <value>關閉除此以外的所有索引標籤</value>
+  </data>
+  <data name="CloseAllTabs" xml:space="preserve">
+    <value>關閉全部</value>
+  </data>
+  <data name="CollapseTreeNodes" xml:space="preserve">
+    <value>摺疊所有樹狀節點</value>
+  </data>
+  <data name="Copy" xml:space="preserve">
+    <value>複製</value>
+  </data>
+  <data name="CopyErrorMessage" xml:space="preserve">
+    <value>複製錯誤訊息</value>
+  </data>
+  <data name="CopyName" xml:space="preserve">
+    <value>複製完整限定名稱</value>
+  </data>
+  <data name="CouldNotUseSdkStyleProjectFormat" xml:space="preserve">
+    <value>無法使用 SDK 樣式專案格式，因為找不到相容的目標 Framework Moniker。</value>
+  </data>
+  <data name="Create" xml:space="preserve">
+    <value>建立</value>
+  </data>
+  <data name="CreatingDiagram" xml:space="preserve">
+    <value>正在建立圖表...</value>
+  </data>
+  <data name="CultureLabel" xml:space="preserve">
+    <value>文化特性</value>
+  </data>
+  <data name="DEBUGDecompile" xml:space="preserve">
+    <value>DEBUG -- 全部反編譯</value>
+  </data>
+  <data name="DEBUGDecompile100x" xml:space="preserve">
+    <value>DEBUG -- 反編譯 100 次</value>
+  </data>
+  <data name="DEBUGDisassemble" xml:space="preserve">
+    <value>DEBUG -- 全部反組譯</value>
+  </data>
+  <data name="DEBUGDumpPDBAsXML" xml:space="preserve">
+    <value>DEBUG -- 將 PDB 傾印為 XML</value>
+  </data>
+  <data name="DebugSteps" xml:space="preserve">
+    <value>偵錯步驟</value>
+  </data>
+  <data name="DebugThisStep" xml:space="preserve">
+    <value>偵錯此步驟</value>
+  </data>
+  <data name="DecodeCustomAttributeBlobs" xml:space="preserve">
+    <value>解碼自訂屬性 Blob</value>
+  </data>
+  <data name="DecompilationCompleteInF1Seconds" xml:space="preserve">
+    <value>反編譯完成，耗時 {0:F1} 秒。</value>
+  </data>
+  <data name="DecompilationViewOptions" xml:space="preserve">
+    <value>反編譯檢視選項</value>
+  </data>
+  <data name="DecompilationWasCancelled" xml:space="preserve">
+    <value>反編譯已取消。</value>
+  </data>
+  <data name="Decompile" xml:space="preserve">
+    <value>反編譯</value>
+  </data>
+  <data name="DecompileToNewPanel" xml:space="preserve">
+    <value>在新索引標籤中反編譯</value>
+  </data>
+  <data name="Decompiler" xml:space="preserve">
+    <value>反編譯器</value>
+  </data>
+  <data name="DecompilerSettings.AggressiveInlining" xml:space="preserve">
+    <value>盡可能一律內嵌區域變數</value>
+  </data>
+  <data name="DecompilerSettings.AllowExtensionAddMethodsInCollectionInitializerExpressions" xml:space="preserve">
+    <value>允許在集合初始設定式運算式中使用擴充「Add」方法</value>
+  </data>
+  <data name="DecompilerSettings.AllowExtensionMethodSyntaxOnRef" xml:space="preserve">
+    <value>使用「ref」擴充方法</value>
+  </data>
+  <data name="DecompilerSettings.AlwaysCastTargetsOfExplicitInterfaceImplementationCalls" xml:space="preserve">
+    <value>一律轉換明確介面實作呼叫的目標</value>
+  </data>
+  <data name="DecompilerSettings.AlwaysMoveInitializer" xml:space="preserve">
+    <value>一律將欄位初始設定式從建構函式移至宣告</value>
+  </data>
+  <data name="DecompilerSettings.AlwaysQualifyMemberReferences" xml:space="preserve">
+    <value>一律限定成員參考</value>
+  </data>
+  <data name="DecompilerSettings.AlwaysShowEnumMemberValues" xml:space="preserve">
+    <value>一律顯示列舉成員值</value>
+  </data>
+  <data name="DecompilerSettings.AlwaysUseBraces" xml:space="preserve">
+    <value>一律使用大括號</value>
+  </data>
+  <data name="DecompilerSettings.AlwaysUseGlobal" xml:space="preserve">
+    <value>一律使用「global::」前置詞完整限定命名空間</value>
+  </data>
+  <data name="DecompilerSettings.ApplyWindowsRuntimeProjectionsOnLoadedAssemblies" xml:space="preserve">
+    <value>對已載入的組件套用 Windows Runtime 投影</value>
+  </data>
+  <data name="DecompilerSettings.ArrayInitializerExpressions" xml:space="preserve">
+    <value>陣列初始設定式</value>
+  </data>
+  <data name="DecompilerSettings.AsyncEnumerator" xml:space="preserve">
+    <value>反編譯非同步 IAsyncEnumerator 方法</value>
+  </data>
+  <data name="DecompilerSettings.AutoLoadAssemblyReferences" xml:space="preserve">
+    <value>自動載入組件參考</value>
+  </data>
+  <data name="DecompilerSettings.CheckForOverflowUnderflow" xml:space="preserve">
+    <value>檢查運算子中的溢位和反向溢位</value>
+  </data>
+  <data name="DecompilerSettings.CheckedOperators" xml:space="preserve">
+    <value>使用者定義的 checked 運算子</value>
+  </data>
+  <data name="DecompilerSettings.CovariantReturns" xml:space="preserve">
+    <value>共變數傳回類型</value>
+  </data>
+  <data name="DecompilerSettings.DecompileAnonymousMethodsLambdas" xml:space="preserve">
+    <value>反編譯匿名方法/Lambda</value>
+  </data>
+  <data name="DecompilerSettings.DecompileAnonymousTypes" xml:space="preserve">
+    <value>反編譯匿名類型</value>
+  </data>
+  <data name="DecompilerSettings.DecompileAsyncMethods" xml:space="preserve">
+    <value>反編譯非同步方法</value>
+  </data>
+  <data name="DecompilerSettings.DecompileAutomaticEvents" xml:space="preserve">
+    <value>反編譯自動事件</value>
+  </data>
+  <data name="DecompilerSettings.DecompileAutomaticProperties" xml:space="preserve">
+    <value>反編譯自動屬性</value>
+  </data>
+  <data name="DecompilerSettings.DecompileAwaitInCatchFinallyBlocks" xml:space="preserve">
+    <value>反編譯 catch/finally 區塊中的 await</value>
+  </data>
+  <data name="DecompilerSettings.DecompileC10PublicUnsafeFixedIntArr10Members" xml:space="preserve">
+    <value>反編譯 C# 1.0「public unsafe fixed int arr[10];」成員</value>
+  </data>
+  <data name="DecompilerSettings.DecompileDecimalConstantAsSimpleLiteralValues" xml:space="preserve">
+    <value>將 [DecimalConstant(...)] 反編譯為簡單常值</value>
+  </data>
+  <data name="DecompilerSettings.DecompileEnumeratorsYieldReturn" xml:space="preserve">
+    <value>反編譯列舉值 (yield return)</value>
+  </data>
+  <data name="DecompilerSettings.DecompileExpressionTrees" xml:space="preserve">
+    <value>反編譯運算式樹狀架構</value>
+  </data>
+  <data name="DecompilerSettings.DecompileForEachWithGetEnumeratorExtension" xml:space="preserve">
+    <value>反編譯使用 GetEnumerator 擴充方法的 foreach 陳述式</value>
+  </data>
+  <data name="DecompilerSettings.DecompileParamsCollections" xml:space="preserve">
+    <value>反編譯 params 集合</value>
+  </data>
+  <data name="DecompilerSettings.DecompileUseOfTheDynamicType" xml:space="preserve">
+    <value>反編譯「dynamic」類型的使用</value>
+  </data>
+  <data name="DecompilerSettings.Deconstruction" xml:space="preserve">
+    <value>偵測解構指派</value>
+  </data>
+  <data name="DecompilerSettings.DetectAsyncUsingAndForeachStatements" xml:space="preserve">
+    <value>偵測已等候的 using 和 foreach 陳述式</value>
+  </data>
+  <data name="DecompilerSettings.DetectForeachStatements" xml:space="preserve">
+    <value>偵測 foreach 陳述式</value>
+  </data>
+  <data name="DecompilerSettings.DetectLockStatements" xml:space="preserve">
+    <value>偵測 lock 陳述式</value>
+  </data>
+  <data name="DecompilerSettings.DetectSwitchOnString" xml:space="preserve">
+    <value>偵測字串上的 switch</value>
+  </data>
+  <data name="DecompilerSettings.DetectTupleComparisons" xml:space="preserve">
+    <value>偵測元組比較</value>
+  </data>
+  <data name="DecompilerSettings.DetectUsingStatements" xml:space="preserve">
+    <value>偵測 using 陳述式</value>
+  </data>
+  <data name="DecompilerSettings.DictionaryInitializerExpressions" xml:space="preserve">
+    <value>字典初始設定式</value>
+  </data>
+  <data name="DecompilerSettings.DoWhileStatement" xml:space="preserve">
+    <value>盡可能轉換為 do-while</value>
+  </data>
+  <data name="DecompilerSettings.ExpandParamsArguments" xml:space="preserve">
+    <value>透過移除明確陣列建立來展開 params 引數</value>
+  </data>
+  <data name="DecompilerSettings.ExtensionMembers" xml:space="preserve">
+    <value>反編譯擴充成員</value>
+  </data>
+  <data name="DecompilerSettings.FSpecificOptions" xml:space="preserve">
+    <value>F# 專用選項</value>
+  </data>
+  <data name="DecompilerSettings.FileScopedNamespaces" xml:space="preserve">
+    <value>使用檔案範圍命名空間宣告</value>
+  </data>
+  <data name="DecompilerSettings.FirstClassSpanTypes" xml:space="preserve">
+    <value>將 Span&lt;T&gt; 和 ReadOnlySpan&lt;T&gt; 視為內建類型</value>
+  </data>
+  <data name="DecompilerSettings.ForStatement" xml:space="preserve">
+    <value>盡可能轉換為 for</value>
+  </data>
+  <data name="DecompilerSettings.FunctionPointers" xml:space="preserve">
+    <value>函式指標</value>
+  </data>
+  <data name="DecompilerSettings.GetterOnlyAutomaticProperties" xml:space="preserve">
+    <value>反編譯僅 get 的自動屬性</value>
+  </data>
+  <data name="DecompilerSettings.IncludeXMLDocumentationCommentsInTheDecompiledCode" xml:space="preserve">
+    <value>在反編譯程式碼中包含 XML 文件註解</value>
+  </data>
+  <data name="DecompilerSettings.InitAccessors" xml:space="preserve">
+    <value>允許 init; 存取子</value>
+  </data>
+  <data name="DecompilerSettings.InlineArrays" xml:space="preserve">
+    <value>內嵌陣列</value>
+  </data>
+  <data name="DecompilerSettings.InsertUsingDeclarations" xml:space="preserve">
+    <value>插入 using 宣告</value>
+  </data>
+  <data name="DecompilerSettings.IntroduceLocalFunctions" xml:space="preserve">
+    <value>引入區域函式</value>
+  </data>
+  <data name="DecompilerSettings.IntroducePrivateProtectedAccessibility" xml:space="preserve">
+    <value>引入「private protected」存取範圍</value>
+  </data>
+  <data name="DecompilerSettings.IntroduceStaticLocalFunctions" xml:space="preserve">
+    <value>引入靜態區域函式</value>
+  </data>
+  <data name="DecompilerSettings.IsByRefLikeAttributeShouldBeReplacedWithRefModifiersOnStructs" xml:space="preserve">
+    <value>IsByRefLikeAttribute 應取代為結構上的「ref」修飾詞</value>
+  </data>
+  <data name="DecompilerSettings.IsReadOnlyAttributeShouldBeReplacedWithReadonlyInModifiersOnStructsParameters" xml:space="preserve">
+    <value>IsReadOnlyAttribute 應取代為結構/參數上的「readonly」/「in」修飾詞</value>
+  </data>
+  <data name="DecompilerSettings.IsUnmanagedAttributeOnTypeParametersShouldBeReplacedWithUnmanagedConstraints" xml:space="preserve">
+    <value>類型參數上的 IsUnmanagedAttribute 應取代為「unmanaged」條件約束</value>
+  </data>
+  <data name="DecompilerSettings.NativeIntegers" xml:space="preserve">
+    <value>使用 nint/nuint 類型</value>
+  </data>
+  <data name="DecompilerSettings.NullPropagation" xml:space="preserve">
+    <value>反編譯 ?. 和 ?[] 運算子</value>
+  </data>
+  <data name="DecompilerSettings.NullableReferenceTypes" xml:space="preserve">
+    <value>可為 Null 的參考類型</value>
+  </data>
+  <data name="DecompilerSettings.NumericIntPtr" xml:space="preserve">
+    <value>將 (U)IntPtr 視為 n(u)int</value>
+  </data>
+  <data name="DecompilerSettings.ObjectCollectionInitializerExpressions" xml:space="preserve">
+    <value>物件/集合初始設定式</value>
+  </data>
+  <data name="DecompilerSettings.Other" xml:space="preserve">
+    <value>其他</value>
+  </data>
+  <data name="DecompilerSettings.PatternCombinators" xml:space="preserve">
+    <value>模式組合子 (and、or、not)</value>
+  </data>
+  <data name="DecompilerSettings.PatternMatching" xml:space="preserve">
+    <value>使用模式比對運算式</value>
+  </data>
+  <data name="DecompilerSettings.ProjectExport" xml:space="preserve">
+    <value>專案匯出</value>
+  </data>
+  <data name="DecompilerSettings.Ranges" xml:space="preserve">
+    <value>範圍</value>
+  </data>
+  <data name="DecompilerSettings.ReadOnlyMethods" xml:space="preserve">
+    <value>唯讀方法</value>
+  </data>
+  <data name="DecompilerSettings.RecordClasses" xml:space="preserve">
+    <value>記錄類別</value>
+  </data>
+  <data name="DecompilerSettings.RecordStructs" xml:space="preserve">
+    <value>記錄結構</value>
+  </data>
+  <data name="DecompilerSettings.RecursivePatternMatching" xml:space="preserve">
+    <value>遞迴模式比對</value>
+  </data>
+  <data name="DecompilerSettings.RefReadOnlyParameters" xml:space="preserve">
+    <value>「ref readonly」參數</value>
+  </data>
+  <data name="DecompilerSettings.RelationalPatterns" xml:space="preserve">
+    <value>關聯式模式</value>
+  </data>
+  <data name="DecompilerSettings.RemoveDeadAndSideEffectFreeCodeUseWithCaution" xml:space="preserve">
+    <value>移除無用且無副作用的程式碼 (請謹慎使用！)</value>
+  </data>
+  <data name="DecompilerSettings.RemoveDeadStores" xml:space="preserve">
+    <value>移除無用存放 (請謹慎使用！)</value>
+  </data>
+  <data name="DecompilerSettings.RemoveOptionalArgumentsIfPossible" xml:space="preserve">
+    <value>盡可能移除選擇性引數</value>
+  </data>
+  <data name="DecompilerSettings.RequiredMembers" xml:space="preserve">
+    <value>必要成員</value>
+  </data>
+  <data name="DecompilerSettings.ScopedRef" xml:space="preserve">
+    <value>「scoped」存留期附註</value>
+  </data>
+  <data name="DecompilerSettings.SeparateLocalVariableDeclarations" xml:space="preserve">
+    <value>盡可能分離區域變數宣告和初始設定式 (int x = 5; -&gt; int x; x = 5;)</value>
+  </data>
+  <data name="DecompilerSettings.ShowInfoFromDebugSymbolsIfAvailable" xml:space="preserve">
+    <value>如果可用，顯示來自偵錯符號的資訊</value>
+  </data>
+  <data name="DecompilerSettings.SortCustomAttributes" xml:space="preserve">
+    <value>排序自訂屬性</value>
+  </data>
+  <data name="DecompilerSettings.SortSwitchSections" xml:space="preserve">
+    <value>依 case 標籤值排序 switch 區段</value>
+  </data>
+  <data name="DecompilerSettings.SparseIntegerSwitch" xml:space="preserve">
+    <value>即使 IL 程式碼未使用跳躍表也偵測整數上的 switch</value>
+  </data>
+  <data name="DecompilerSettings.StringConcat" xml:space="preserve">
+    <value>將「string.Concat(a, b)」呼叫反編譯為「a + b」</value>
+  </data>
+  <data name="DecompilerSettings.StructDefaultConstructorsAndFieldInitializers" xml:space="preserve">
+    <value>使用結構欄位初始設定式和預設建構函式</value>
+  </data>
+  <data name="DecompilerSettings.SwitchExpressions" xml:space="preserve">
+    <value>switch 運算式</value>
+  </data>
+  <data name="DecompilerSettings.SwitchOnReadOnlySpanChar" xml:space="preserve">
+    <value>對 (ReadOnly)Span&lt;char&gt; 使用 switch</value>
+  </data>
+  <data name="DecompilerSettings.UnsignedRightShift" xml:space="preserve">
+    <value>不帶正負號的右移 (&gt;&gt;&gt;)</value>
+  </data>
+  <data name="DecompilerSettings.UseDiscards" xml:space="preserve">
+    <value>使用捨棄</value>
+  </data>
+  <data name="DecompilerSettings.UseEnhancedUsing" xml:space="preserve">
+    <value>使用增強的 using 變數宣告</value>
+  </data>
+  <data name="DecompilerSettings.UseExpressionBodiedMemberSyntaxForGetOnlyProperties" xml:space="preserve">
+    <value>對僅 get 的屬性使用運算式主體成員語法</value>
+  </data>
+  <data name="DecompilerSettings.UseExtensionMethodSyntax" xml:space="preserve">
+    <value>使用擴充方法語法</value>
+  </data>
+  <data name="DecompilerSettings.UseImplicitConversionsBetweenTupleTypes" xml:space="preserve">
+    <value>使用元組類型之間的隱含轉換</value>
+  </data>
+  <data name="DecompilerSettings.UseImplicitMethodGroupConversions" xml:space="preserve">
+    <value>使用隱含方法群組轉換</value>
+  </data>
+  <data name="DecompilerSettings.UseLINQExpressionSyntax" xml:space="preserve">
+    <value>使用 LINQ 運算式語法</value>
+  </data>
+  <data name="DecompilerSettings.UseLambdaSyntaxIfPossible" xml:space="preserve">
+    <value>盡可能使用 Lambda 語法</value>
+  </data>
+  <data name="DecompilerSettings.UseLiftedOperatorsForNullables" xml:space="preserve">
+    <value>為可為 Null 的類型使用提升的運算子</value>
+  </data>
+  <data name="DecompilerSettings.UseNamedArguments" xml:space="preserve">
+    <value>使用具名引數</value>
+  </data>
+  <data name="DecompilerSettings.UseNestedDirectoriesForNamespaces" xml:space="preserve">
+    <value>對命名空間使用巢狀目錄</value>
+  </data>
+  <data name="DecompilerSettings.UseNonTrailingNamedArguments" xml:space="preserve">
+    <value>使用非尾端具名引數</value>
+  </data>
+  <data name="DecompilerSettings.UseObjectCreationOfGenericTypeParameter" xml:space="preserve">
+    <value>使用 new T() 而非 Activator.CreateInstance&lt;T&gt;</value>
+  </data>
+  <data name="DecompilerSettings.UseOutVariableDeclarations" xml:space="preserve">
+    <value>使用 out 變數宣告</value>
+  </data>
+  <data name="DecompilerSettings.UsePatternBasedFixedStatement" xml:space="preserve">
+    <value>使用基於模式的 fixed 陳述式</value>
+  </data>
+  <data name="DecompilerSettings.UsePrimaryConstructorDecompilerSettings.SyntaxForNonRecordTypes" xml:space="preserve">
+    <value>對非記錄類型使用主要建構函式語法</value>
+  </data>
+  <data name="DecompilerSettings.UsePrimaryConstructorSyntax" xml:space="preserve">
+    <value>對記錄使用主要建構函式語法</value>
+  </data>
+  <data name="DecompilerSettings.UsePrimaryConstructorSyntaxForNonRecordTypes" xml:space="preserve">
+    <value>對非記錄類型使用主要建構函式語法</value>
+  </data>
+  <data name="DecompilerSettings.UseRefLocalsForAccurateOrderOfEvaluation" xml:space="preserve">
+    <value>使用 ref 區域變數以準確表示評估順序</value>
+  </data>
+  <data name="DecompilerSettings.UseSdkStyleProjectFormat" xml:space="preserve">
+    <value>為產生的專案檔案 (*.csproj) 使用新的 SDK 樣式格式</value>
+  </data>
+  <data name="DecompilerSettings.UseStackallocInitializerSyntax" xml:space="preserve">
+    <value>使用 stackalloc 初始設定式語法</value>
+  </data>
+  <data name="DecompilerSettings.UseStringInterpolation" xml:space="preserve">
+    <value>使用字串插值</value>
+  </data>
+  <data name="DecompilerSettings.UseThrowExpressions" xml:space="preserve">
+    <value>使用 throw 運算式</value>
+  </data>
+  <data name="DecompilerSettings.UseTupleTypeSyntax" xml:space="preserve">
+    <value>使用元組類型語法</value>
+  </data>
+  <data name="DecompilerSettings.UseVariableNamesFromDebugSymbolsIfAvailable" xml:space="preserve">
+    <value>如果可用，使用來自偵錯符號的變數名稱</value>
+  </data>
+  <data name="DecompilerSettings.Utf8StringLiterals" xml:space="preserve">
+    <value>UTF-8 字串常值</value>
+  </data>
+  <data name="DecompilerSettings.VBSpecificOptions" xml:space="preserve">
+    <value>VB 專用選項</value>
+  </data>
+  <data name="DecompilerSettings.WithExpressions" xml:space="preserve">
+    <value>「with」初始設定式</value>
+  </data>
+  <data name="DecompilerSettingsPanelLongText" xml:space="preserve">
+    <value>下列選取的設定會與語言下拉式清單中的選取項目一起套用至反編譯器輸出。在下拉式清單中選取較低的語言版本，將會停用較高版本的所有已選取選項。請注意，某些設定會彼此隱含相依，例如：若未先將靜態呼叫轉換為擴充方法呼叫，就無法引入 LINQ 運算式。</value>
+  </data>
+  <data name="Decompiling" xml:space="preserve">
+    <value>正在反編譯...</value>
+  </data>
+  <data name="Dependencies" xml:space="preserve">
+    <value>相依性</value>
+  </data>
+  <data name="DerivedTypes" xml:space="preserve">
+    <value>衍生類型</value>
+  </data>
+  <data name="Display" xml:space="preserve">
+    <value>顯示</value>
+  </data>
+  <data name="DisplayCode" xml:space="preserve">
+    <value>顯示程式碼</value>
+  </data>
+  <data name="DisplaySettingsPanel_Font" xml:space="preserve">
+    <value>字型:</value>
+  </data>
+  <data name="DisplaySettingsPanel_Theme" xml:space="preserve">
+    <value>佈景主題:</value>
+  </data>
+  <data name="Download" xml:space="preserve">
+    <value>下載</value>
+  </data>
+  <data name="E_xit" xml:space="preserve">
+    <value>結束(_X)</value>
+  </data>
+  <data name="Editor" xml:space="preserve">
+    <value>編輯器</value>
+  </data>
+  <data name="EnableFoldingBlocksBraces" xml:space="preserve">
+    <value>對大括號中的所有區塊啟用摺疊</value>
+  </data>
+  <data name="EnableWordWrap" xml:space="preserve">
+    <value>啟用自動換行</value>
+  </data>
+  <data name="EnterListName" xml:space="preserve">
+    <value>輸入清單名稱:</value>
+  </data>
+  <data name="Exit" xml:space="preserve">
+    <value>結束</value>
+  </data>
+  <data name="ExpandMemberDefinitionsAfterDecompilation" xml:space="preserve">
+    <value>反編譯後展開成員定義</value>
+  </data>
+  <data name="ExpandUsingDeclarationsAfterDecompilation" xml:space="preserve">
+    <value>反編譯後展開 using 宣告</value>
+  </data>
+  <data name="ExportProjectSolution" xml:space="preserve">
+    <value>匯出專案/方案...</value>
+  </data>
+  <data name="ExtractAllPackageEntries" xml:space="preserve">
+    <value>擷取所有套件項目</value>
+  </data>
+  <data name="ExtractPackageEntry" xml:space="preserve">
+    <value>擷取套件項目</value>
+  </data>
+  <data name="Folding" xml:space="preserve">
+    <value>摺疊</value>
+  </data>
+  <data name="Font" xml:space="preserve">
+    <value>字型</value>
+  </data>
+  <data name="Forward" xml:space="preserve">
+    <value>前進</value>
+  </data>
+  <data name="GeneratePortable" xml:space="preserve">
+    <value>產生可攜式 PDB</value>
+  </data>
+  <data name="GeneratedPDBFile" xml:space="preserve">
+    <value>已產生 PDB: {0}</value>
+  </data>
+  <data name="GeneratingPortablePDB" xml:space="preserve">
+    <value>正在為 {0} 產生可攜式 PDB...</value>
+  </data>
+  <data name="GenerationCompleteInSeconds" xml:space="preserve">
+    <value>產生完成，耗時 {0} 秒。</value>
+  </data>
+  <data name="GenerationFailedForAssembly" xml:space="preserve">
+    <value>無法為 {0} 產生 PDB: {1}</value>
+  </data>
+  <data name="GenerationWasCancelled" xml:space="preserve">
+    <value>產生已取消。</value>
+  </data>
+  <data name="GoToToken" xml:space="preserve">
+    <value>移至語彙基元</value>
+  </data>
+  <data name="HideEmptyMetadataTables" xml:space="preserve">
+    <value>在樹狀檢視中隱藏空白中繼資料表</value>
+  </data>
+  <data name="HighlightCurrentLine" xml:space="preserve">
+    <value>反白顯示目前行</value>
+  </data>
+  <data name="HighlightMatchingBraces" xml:space="preserve">
+    <value>反白顯示相符的大括號</value>
+  </data>
+  <data name="ILSpyAboutPageTxt" xml:space="preserve">
+    <value>ILSpyAboutPage.txt</value>
+  </data>
+  <data name="ILSpyStartedFrom" xml:space="preserve">
+    <value>ILSpy 啟動自 </value>
+  </data>
+  <data name="ILSpyVersion" xml:space="preserve">
+    <value>ILSpy 版本 </value>
+  </data>
+  <data name="ILSpyVersionAvailable" xml:space="preserve">
+    <value>有新的 ILSpy 版本可用。</value>
+  </data>
+  <data name="IndentSize" xml:space="preserve">
+    <value>縮排大小:</value>
+  </data>
+  <data name="Indentation" xml:space="preserve">
+    <value>縮排</value>
+  </data>
+  <data name="InsertUsingDeclarations" xml:space="preserve">
+    <value>插入 using 宣告</value>
+  </data>
+  <data name="ListDeleteConfirmation" xml:space="preserve">
+    <value>是否確定要刪除所選組件清單？</value>
+  </data>
+  <data name="ListExistsAlready" xml:space="preserve">
+    <value>已找到同名清單。</value>
+  </data>
+  <data name="ListsResetConfirmation" xml:space="preserve">
+    <value>是否確定要移除所有組件清單並重新建立預設組件清單？</value>
+  </data>
+  <data name="LoadAssembliesThatWereLoadedInTheLastInstance" xml:space="preserve">
+    <value>載入上一個執行個體中載入的組件。</value>
+  </data>
+  <data name="Loading" xml:space="preserve">
+    <value>正在載入...</value>
+  </data>
+  <data name="Location" xml:space="preserve">
+    <value>位置</value>
+  </data>
+  <data name="ManageAssemblyLists" xml:space="preserve">
+    <value>管理組件清單</value>
+  </data>
+  <data name="ManageAssembly_Lists" xml:space="preserve">
+    <value>管理組件清單(_L)...</value>
+  </data>
+  <data name="Metadata" xml:space="preserve">
+    <value>中繼資料</value>
+  </data>
+  <data name="Misc" xml:space="preserve">
+    <value>其他</value>
+  </data>
+  <data name="NETFrameworkVersion" xml:space="preserve">
+    <value>.NET 版本 </value>
+  </data>
+  <data name="Name" xml:space="preserve">
+    <value>名稱</value>
+  </data>
+  <data name="Navigation" xml:space="preserve">
+    <value>巡覽</value>
+  </data>
+  <data name="NavigationFailed" xml:space="preserve">
+    <value>巡覽失敗，因為目標是隱藏的或是編譯器產生的類別。
+請停用所有可能隱藏該項目的篩選器 (即啟用「檢視 &gt; 顯示內部類型和成員」) 後再試一次。</value>
+  </data>
+  <data name="NewList" xml:space="preserve">
+    <value>新增清單</value>
+  </data>
+  <data name="NewTab" xml:space="preserve">
+    <value>新增索引標籤</value>
+  </data>
+  <data name="NuGetFeedAuthors" xml:space="preserve">
+    <value>作者:</value>
+  </data>
+  <data name="NuGetFeedDescription" xml:space="preserve">
+    <value>描述</value>
+  </data>
+  <data name="NuGetFeedDownloading" xml:space="preserve">
+    <value>正在下載套件...</value>
+  </data>
+  <data name="NuGetFeedDownloads" xml:space="preserve">
+    <value>下載次數:</value>
+  </data>
+  <data name="NuGetFeedLicense" xml:space="preserve">
+    <value>授權:</value>
+  </data>
+  <data name="NuGetFeedLoadMore" xml:space="preserve">
+    <value>載入更多</value>
+  </data>
+  <data name="NuGetFeedPackageSource" xml:space="preserve">
+    <value>套件來源(_P):</value>
+  </data>
+  <data name="NuGetFeedProjectUrl" xml:space="preserve">
+    <value>專案 URL:</value>
+  </data>
+  <data name="NuGetFeedPublished" xml:space="preserve">
+    <value>發行日期:</value>
+  </data>
+  <data name="NuGetFeedRefresh" xml:space="preserve">
+    <value>重新整理</value>
+  </data>
+  <data name="NuGetFeedSearchWatermark" xml:space="preserve">
+    <value>搜尋套件</value>
+  </data>
+  <data name="NuGetFeedSelectPackage" xml:space="preserve">
+    <value>選取套件</value>
+  </data>
+  <data name="NuGetFeedShowPrerelease" xml:space="preserve">
+    <value>顯示發行前版本套件</value>
+  </data>
+  <data name="NuGetFeedTags" xml:space="preserve">
+    <value>標籤:</value>
+  </data>
+  <data name="NuGetFeedVersion" xml:space="preserve">
+    <value>版本(_V):</value>
+  </data>
+  <data name="NugetPackageBrowser" xml:space="preserve">
+    <value>NuGet 套件瀏覽器</value>
+  </data>
+  <data name="OK" xml:space="preserve">
+    <value>確定</value>
+  </data>
+  <data name="Open" xml:space="preserve">
+    <value>開啟</value>
+  </data>
+  <data name="OpenExplorer" xml:space="preserve">
+    <value>開啟檔案總管</value>
+  </data>
+  <data name="OpenFrom" xml:space="preserve">
+    <value>從 GAC 開啟</value>
+  </data>
+  <data name="OpenFrom_GAC" xml:space="preserve">
+    <value>從 GAC 開啟(_G)...</value>
+  </data>
+  <data name="OpenFrom_NuGetFeed" xml:space="preserve">
+    <value>從 NuGet 摘要開啟(_N)...</value>
+  </data>
+  <data name="OpenListDialog__Delete" xml:space="preserve">
+    <value>刪除(_D)</value>
+  </data>
+  <data name="OpenListDialog__Open" xml:space="preserve">
+    <value>開啟(_O)</value>
+  </data>
+  <data name="OperationWasCancelled" xml:space="preserve">
+    <value>操作已取消。</value>
+  </data>
+  <data name="Options" xml:space="preserve">
+    <value>選項</value>
+  </data>
+  <data name="Other" xml:space="preserve">
+    <value>其他</value>
+  </data>
+  <data name="OtherOptions" xml:space="preserve">
+    <value>其他選項</value>
+  </data>
+  <data name="OtherResources" xml:space="preserve">
+    <value>其他資源</value>
+  </data>
+  <data name="PortablePDBPdbAllFiles" xml:space="preserve">
+    <value>可攜式 PDB|*.pdb|所有檔案|*.*</value>
+  </data>
+  <data name="ProjectExportFormatChangeSettingHint" xml:space="preserve">
+    <value>可透過切換下列設定來變更此項：選項 &gt; 反編譯器 &gt; 專案匯出 &gt; 為產生的專案檔案 (*.csproj) 使用新的 SDK 樣式格式。</value>
+  </data>
+  <data name="ProjectExportFormatNonSDKHint" xml:space="preserve">
+    <value>已產生非 SDK 專案。在 https://docs.microsoft.com/en-us/nuget/resources/check-project-format 深入了解。</value>
+  </data>
+  <data name="ProjectExportFormatSDKHint" xml:space="preserve">
+    <value>已產生 SDK 樣式專案。在 https://docs.microsoft.com/en-us/nuget/resources/check-project-format 深入了解。</value>
+  </data>
+  <data name="ProjectExportPathTooLong" xml:space="preserve">
+    <value>無法反編譯組件 {0}，因為命名空間名稱過長或目錄結構巢狀過深。
+
+如果使用的是 Windows 10.0.14393 (Windows 10 版本 1607) 或更新版本，可以在「HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\FileSystem」處建立名為「LongPathsEnabled」、值為 0x1 的 REG_DWORD 登錄機碼來啟用「長路徑支援」(更多資訊請參閱 https://docs.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation)。
+
+如果這無法解決問題且系統支援長路徑，可以嘗試使用巢狀路徑結構。可透過切換下列設定來變更此項：選項 &gt; 反編譯器 &gt; 專案匯出 &gt; 對命名空間使用巢狀目錄。這會有幫助，因為即使在「長路徑支援」的平台上，目錄名稱的長度也有限制，在 Windows/NTFS 上為 255 個字元。</value>
+  </data>
+  <data name="PropertyManuallyMissingReferencesListLoadedAssemblies" xml:space="preserve">
+    <value>例如屬性 getter/setter 存取。為獲得最佳反編譯結果，請手動將遺漏的參考新增至已載入組件清單。</value>
+  </data>
+  <data name="PublicToken" xml:space="preserve">
+    <value>公開金鑰語彙基元</value>
+  </data>
+  <data name="R_ename" xml:space="preserve">
+    <value>重新命名(_E)</value>
+  </data>
+  <data name="ReferenceName" xml:space="preserve">
+    <value>參考名稱</value>
+  </data>
+  <data name="ReferencedTypes" xml:space="preserve">
+    <value>參考的類型</value>
+  </data>
+  <data name="References" xml:space="preserve">
+    <value>參考</value>
+  </data>
+  <data name="RefreshCommand_ReloadAssemblies" xml:space="preserve">
+    <value>重新載入所有組件</value>
+  </data>
+  <data name="ReloadAssemblies" xml:space="preserve">
+    <value>重新載入所有組件</value>
+  </data>
+  <data name="Remove" xml:space="preserve">
+    <value>移除</value>
+  </data>
+  <data name="RemoveDeadSideEffectFreeCode" xml:space="preserve">
+    <value>移除無用且無副作用的程式碼</value>
+  </data>
+  <data name="RemoveShellIntegration" xml:space="preserve">
+    <value>移除殼層整合</value>
+  </data>
+  <data name="RemoveShellIntegrationMessage" xml:space="preserve">
+    <value>這將從登錄的「HKCU\Software\Classes\dllfile\shell\Open with ILSpy\command」和「HKCU\Software\Classes\exefile\shell\Open with ILSpy\command」處移除「{0}」。
+
+是否要繼續？</value>
+  </data>
+  <data name="RenameList" xml:space="preserve">
+    <value>重新命名清單</value>
+  </data>
+  <data name="ResetToDefaults" xml:space="preserve">
+    <value>重設為預設值</value>
+  </data>
+  <data name="ResetToDefaultsConfirmationMessage" xml:space="preserve">
+    <value>是否確定要載入使用中頁面的預設設定？</value>
+  </data>
+  <data name="ResourcesFileFilter" xml:space="preserve">
+    <value>資源檔案 (*.resources)|*.resources|資源 XML 檔案|*.resx</value>
+  </data>
+  <data name="Save" xml:space="preserve">
+    <value>儲存</value>
+  </data>
+  <data name="SaveCode" xml:space="preserve">
+    <value>儲存程式碼</value>
+  </data>
+  <data name="ScopeSearchToThisAssembly" xml:space="preserve">
+    <value>將搜尋範圍限制為此組件</value>
+  </data>
+  <data name="ScopeSearchToThisNamespace" xml:space="preserve">
+    <value>將搜尋範圍限制為此命名空間</value>
+  </data>
+  <data name="Search" xml:space="preserve">
+    <value>搜尋...</value>
+  </data>
+  <data name="SearchAbortedMoreThan1000ResultsFound" xml:space="preserve">
+    <value>搜尋已中止，找到超過 1000 個結果。</value>
+  </data>
+  <data name="SearchCtrlShiftFOrCtrlE" xml:space="preserve">
+    <value>搜尋 (Ctrl+Shift+F 或 Ctrl+E)</value>
+  </data>
+  <data name="SearchMSDN" xml:space="preserve">
+    <value>搜尋 Microsoft 文件...</value>
+  </data>
+  <data name="SearchPane_Search" xml:space="preserve">
+    <value>搜尋</value>
+  </data>
+  <data name="Searching" xml:space="preserve">
+    <value>正在搜尋...</value>
+  </data>
+  <data name="Select" xml:space="preserve">
+    <value>全選</value>
+  </data>
+  <data name="SelectAssembliesOpen" xml:space="preserve">
+    <value>選取要開啟的組件:</value>
+  </data>
+  <data name="SelectAssemblyListDropdownTooltip" xml:space="preserve">
+    <value>選取組件清單 (Alt+A)</value>
+  </data>
+  <data name="SelectLanguageDropdownTooltip" xml:space="preserve">
+    <value>選取要反編譯成的語言 (Alt+L)</value>
+  </data>
+  <data name="SelectList" xml:space="preserve">
+    <value>選取清單:</value>
+  </data>
+  <data name="SelectPDB" xml:space="preserve">
+    <value>選取 PDB...</value>
+  </data>
+  <data name="SelectPDBOutputFolder" xml:space="preserve">
+    <value>選取目標資料夾</value>
+  </data>
+  <data name="SelectVersionDropdownTooltip" xml:space="preserve">
+    <value>選取要輸出的語言版本 (Alt+E)</value>
+  </data>
+  <data name="SettingsChangeRestartRequired" xml:space="preserve">
+    <value>必須重新啟動 ILSpy，變更才會生效。</value>
+  </data>
+  <data name="Shell" xml:space="preserve">
+    <value>殼層</value>
+  </data>
+  <data name="ShowAllTypesAndMembers" xml:space="preserve">
+    <value>顯示所有類型和成員</value>
+  </data>
+  <data name="ShowAssemblyLoad" xml:space="preserve">
+    <value>顯示組件載入記錄檔</value>
+  </data>
+  <data name="ShowChildIndexInBlock" xml:space="preserve">
+    <value>ShowChildIndexInBlock</value>
+  </data>
+  <data name="ShowDocumentationDecompiledCode" xml:space="preserve">
+    <value>在反編譯程式碼中顯示 XML 文件</value>
+  </data>
+  <data name="ShowILRanges" xml:space="preserve">
+    <value>ShowILRanges</value>
+  </data>
+  <data name="ShowInfoFromDebugSymbolsAvailable" xml:space="preserve">
+    <value>如果可用，顯示來自偵錯符號的資訊</value>
+  </data>
+  <data name="ShowInternalTypesMembers" xml:space="preserve">
+    <value>顯示公用、私用和內部</value>
+  </data>
+  <data name="ShowLineNumbers" xml:space="preserve">
+    <value>顯示行號</value>
+  </data>
+  <data name="ShowMetadataTokens" xml:space="preserve">
+    <value>顯示中繼資料語彙基元</value>
+  </data>
+  <data name="ShowMetadataTokensInBase10" xml:space="preserve">
+    <value>以十進位顯示中繼資料語彙基元</value>
+  </data>
+  <data name="ShowOmnibar" xml:space="preserve">
+    <value>在反編譯程式碼上方顯示全能列 (階層連結/搜尋列)</value>
+  </data>
+  <data name="ShowPublicOnlyTypesMembers" xml:space="preserve">
+    <value>僅顯示公用類型和成員</value>
+  </data>
+  <data name="ShowRawOffsetsAndBytesBeforeInstruction" xml:space="preserve">
+    <value>在每個指令前顯示原始位移和位元組</value>
+  </data>
+  <data name="ShowStateAfterThisStep" xml:space="preserve">
+    <value>顯示此步驟之後的狀態</value>
+  </data>
+  <data name="ShowStateBeforeThisStep" xml:space="preserve">
+    <value>顯示此步驟之前的狀態</value>
+  </data>
+  <data name="Show_allTypesAndMembers" xml:space="preserve">
+    <value>顯示所有類型和成員(_A)</value>
+  </data>
+  <data name="Show_internalTypesMembers" xml:space="preserve">
+    <value>顯示公用、私用和內部</value>
+  </data>
+  <data name="Show_publiconlyTypesMembers" xml:space="preserve">
+    <value>僅顯示公用類型和成員(_P)</value>
+  </data>
+  <data name="Size" xml:space="preserve">
+    <value>大小:</value>
+  </data>
+  <data name="SortAssemblyListName" xml:space="preserve">
+    <value>依名稱排序組件清單</value>
+  </data>
+  <data name="SortAssembly_listName" xml:space="preserve">
+    <value>依名稱排序組件清單(_L)</value>
+  </data>
+  <data name="SortResultsFitness" xml:space="preserve">
+    <value>依相符度排序結果</value>
+  </data>
+  <data name="StandBy" xml:space="preserve">
+    <value>請稍候...</value>
+  </data>
+  <data name="Status" xml:space="preserve">
+    <value>狀態</value>
+  </data>
+  <data name="StringTable" xml:space="preserve">
+    <value>字串表</value>
+  </data>
+  <data name="StyleTheWindowTitleBar" xml:space="preserve">
+    <value>設定視窗標題列樣式</value>
+  </data>
+  <data name="TabSize" xml:space="preserve">
+    <value>定位字元大小:</value>
+  </data>
+  <data name="Theme" xml:space="preserve">
+    <value>佈景主題</value>
+  </data>
+  <data name="ToggleFolding" xml:space="preserve">
+    <value>切換所有摺疊</value>
+  </data>
+  <data name="TreeViewOptions" xml:space="preserve">
+    <value>樹狀檢視選項</value>
+  </data>
+  <data name="Type" xml:space="preserve">
+    <value>類型</value>
+  </data>
+  <data name="UILanguage" xml:space="preserve">
+    <value>UI 語言</value>
+  </data>
+  <data name="UILanguage_System" xml:space="preserve">
+    <value>系統</value>
+  </data>
+  <data name="UpdateILSpyFound" xml:space="preserve">
+    <value>找不到 ILSpy 的更新。</value>
+  </data>
+  <data name="UseFieldSugar" xml:space="preserve">
+    <value>UseFieldSugar</value>
+  </data>
+  <data name="UseLogicOperationSugar" xml:space="preserve">
+    <value>UseLogicOperationSugar</value>
+  </data>
+  <data name="UseNestedNamespaceNodes" xml:space="preserve">
+    <value>使用巢狀命名空間結構</value>
+  </data>
+  <data name="UseTabsInsteadOfSpaces" xml:space="preserve">
+    <value>使用定位字元而非空格</value>
+  </data>
+  <data name="UsingLatestRelease" xml:space="preserve">
+    <value>您使用的是最新版本。</value>
+  </data>
+  <data name="UsingNightlyBuildNewerThanLatestRelease" xml:space="preserve">
+    <value>您使用的是比最新版本更新的每日組建版本。</value>
+  </data>
+  <data name="Value" xml:space="preserve">
+    <value>值</value>
+  </data>
+  <data name="ValueString" xml:space="preserve">
+    <value>值 (以字串表示)</value>
+  </data>
+  <data name="VariableNamesFromDebugSymbolsAvailable" xml:space="preserve">
+    <value>如果可用，使用來自偵錯符號的變數名稱</value>
+  </data>
+  <data name="Version" xml:space="preserve">
+    <value>版本</value>
+  </data>
+  <data name="VersionAvailable" xml:space="preserve">
+    <value>版本 {0} 可用。</value>
+  </data>
+  <data name="View" xml:space="preserve">
+    <value>檢視</value>
+  </data>
+  <data name="VisualStudioSolutionFileSlnAllFiles" xml:space="preserve">
+    <value>Visual Studio 方案檔案|*.sln|所有檔案|*.*</value>
+  </data>
+  <data name="WarningAsmMarkedRef" xml:space="preserve">
+    <value>警告：此組件標記為「參考組件」，這表示它只包含中繼資料，而不包含可執行的程式碼。</value>
+  </data>
+  <data name="WarningSomeAssemblyReference" xml:space="preserve">
+    <value>警告：某些組件參考無法自動解析。這可能導致某些部分反編譯不正確，</value>
+  </data>
+  <data name="WatermarkText" xml:space="preserve">
+    <value>搜尋 t:TypeName、m:Member 或 c:Constant;使用精確相符 (=term)、「不應包含」 (-term) 或「必須包含」 (+term);使用 /reg(ular)?Ex(pressions)?/ 或同時使用 - t:/Type(Name)?/...</value>
+  </data>
+  <data name="Window_CloseAllDocuments" xml:space="preserve">
+    <value>關閉所有文件(_C)</value>
+  </data>
+  <data name="Window_ResetLayout" xml:space="preserve">
+    <value>重設配置(_R)</value>
+  </data>
+  <data name="_About" xml:space="preserve">
+    <value>關於(_A)</value>
+  </data>
+  <data name="_AddMainList" xml:space="preserve">
+    <value>新增至主清單(_A)</value>
+  </data>
+  <data name="_Analyzer" xml:space="preserve">
+    <value>分析器(_Z)</value>
+  </data>
+  <data name="_Assemblies" xml:space="preserve">
+    <value>組件(_A)</value>
+  </data>
+  <data name="_CheckUpdates" xml:space="preserve">
+    <value>檢查更新(_C)</value>
+  </data>
+  <data name="_CollapseTreeNodes" xml:space="preserve">
+    <value>摺疊所有樹狀節點(_C)</value>
+  </data>
+  <data name="_CreateDiagram" xml:space="preserve">
+    <value>建立圖表(_D)...</value>
+  </data>
+  <data name="_File" xml:space="preserve">
+    <value>檔案(_F)</value>
+  </data>
+  <data name="_Help" xml:space="preserve">
+    <value>說明(_H)</value>
+  </data>
+  <data name="_LoadDependencies" xml:space="preserve">
+    <value>載入相依性(_L)</value>
+  </data>
+  <data name="_New" xml:space="preserve">
+    <value>新增(_N)</value>
+  </data>
+  <data name="_Open" xml:space="preserve">
+    <value>開啟(_O)...</value>
+  </data>
+  <data name="_OpenCommandLineHere" xml:space="preserve">
+    <value>在此處開啟命令列(_O)</value>
+  </data>
+  <data name="_OpenContainingFolder" xml:space="preserve">
+    <value>開啟內含資料夾(_O)</value>
+  </data>
+  <data name="_Options" xml:space="preserve">
+    <value>選項(_O)...</value>
+  </data>
+  <data name="_Reload" xml:space="preserve">
+    <value>重新載入(_R)</value>
+  </data>
+  <data name="_Remove" xml:space="preserve">
+    <value>移除(_R)</value>
+  </data>
+  <data name="_RemoveAssembliesWithLoadErrors" xml:space="preserve">
+    <value>移除載入失敗的組件(_R)</value>
+  </data>
+  <data name="_Reset" xml:space="preserve">
+    <value>重設(_R)</value>
+  </data>
+  <data name="_Resources" xml:space="preserve">
+    <value>資源</value>
+  </data>
+  <data name="_SaveCode" xml:space="preserve">
+    <value>儲存程式碼(_S)...</value>
+  </data>
+  <data name="_Search" xml:space="preserve">
+    <value>搜尋(_S):</value>
+  </data>
+  <data name="_SearchFor" xml:space="preserve">
+    <value>搜尋(_S):</value>
+  </data>
+  <data name="_ShowDebugSteps" xml:space="preserve">
+    <value>顯示偵錯步驟(_S)</value>
+  </data>
+  <data name="_ToggleFolding" xml:space="preserve">
+    <value>切換摺疊</value>
+  </data>
+  <data name="_View" xml:space="preserve">
+    <value>檢視(_V)</value>
+  </data>
+  <data name="_Window" xml:space="preserve">
+    <value>視窗(_W)</value>
+  </data>
+</root>
