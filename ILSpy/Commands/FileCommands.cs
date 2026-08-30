@@ -34,6 +34,7 @@ using ICSharpCode.ILSpy.AssemblyTree;
 using ICSharpCode.ILSpy.Docking;
 using ICSharpCode.ILSpy.Languages;
 using ICSharpCode.ILSpy.NuGetFeeds;
+using ICSharpCode.ILSpy.Processes;
 using ICSharpCode.ILSpy.TreeNodes;
 using ICSharpCode.ILSpy.Views;
 
@@ -153,6 +154,30 @@ namespace ICSharpCode.ILSpy.Commands
 		}
 	}
 
+	[ExportMainMenuCommand(ParentMenuID = nameof(Resources._File), Header = nameof(Resources.OpenFrom_RunningProcess), MenuIcon = "Images/Process", MenuCategory = nameof(Resources.Open), MenuOrder = 1.7)]
+	[Shared]
+	[method: ImportingConstructor]
+	sealed class OpenFromRunningProcessCommand(AssemblyTreeModel assemblyTreeModel) : SimpleCommand
+	{
+		public override void Execute(object? parameter)
+		{
+			var owner = UiContext.MainWindow;
+			if (owner == null)
+				return;
+			ShowAsync(owner).HandleExceptions();
+		}
+
+		async Task ShowAsync(global::Avalonia.Controls.Window owner)
+		{
+			// A fresh explorer per invocation: it holds no cache worth keeping alive, and
+			// the process list is stale the moment the dialog closes anyway.
+			var dlg = new Views.OpenFromProcessDialog(new ProcessExplorer());
+			var paths = await dlg.ShowDialog<string[]?>(owner);
+			if (paths is { Length: > 0 })
+				assemblyTreeModel.OpenFiles(paths);
+		}
+	}
+
 	[ExportMainMenuCommand(ParentMenuID = nameof(Resources._File), Header = nameof(Resources.ManageAssembly_Lists), MenuIcon = "Images/AssemblyList", MenuCategory = "AssemblyList", MenuOrder = 10)]
 	[Shared]
 	sealed class ManageAssemblyListsCommand : SimpleCommand
@@ -240,9 +265,9 @@ namespace ICSharpCode.ILSpy.Commands
 		{
 			// Several selected assemblies export a Visual Studio solution (one project each),
 			// matching the Save Code context-menu entry.
-			if (SolutionExport.TryGetAssemblies(assemblyTreeModel.SelectedItems, out var assemblies))
+			if (ProjectExport.TryGetSolutionAssemblies(assemblyTreeModel.SelectedItems, out var assemblies))
 			{
-				await SolutionExport.PromptAndExportAsync(assemblies, languageService.CurrentLanguage, dockWorkspace);
+				await ProjectExport.PromptAndExportSolutionAsync(assemblies, languageService.CurrentLanguage, dockWorkspace);
 				return;
 			}
 

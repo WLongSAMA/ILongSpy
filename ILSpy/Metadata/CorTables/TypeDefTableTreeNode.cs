@@ -44,8 +44,14 @@ namespace ICSharpCode.ILSpy.Metadata.CorTables
 		protected override IReadOnlyList<TypeDefEntry> LoadTable()
 		{
 			var list = new List<TypeDefEntry>();
-			foreach (var row in metadataFile.Metadata.TypeDefinitions)
-				list.Add(new TypeDefEntry(metadataFile, row));
+			// FieldList/MethodList come from the raw rows (GetTypeDefListColumns): the computed
+			// member ranges (TypeDefinition.GetFields/GetMethods) are empty for a memberless type,
+			// but the stored column value is the running list position (the next type's first
+			// member row, or one past the member table's end), never 0.
+			foreach (var (handle, fieldList, methodList) in metadataFile.Metadata.GetTypeDefListColumns())
+			{
+				list.Add(new TypeDefEntry(metadataFile, handle, fieldList, methodList));
+			}
 			return list;
 		}
 
@@ -103,35 +109,40 @@ namespace ICSharpCode.ILSpy.Metadata.CorTables
 			}
 
 			[ColumnInfo("X8", Kind = ColumnKind.Token)]
-			public int FieldList => MetadataTokens.GetToken(typeDef.GetFields().FirstOrDefault());
+			public int FieldList => 0x04000000 | fieldList;
 
 			string? fieldListTooltip;
 			public string? FieldListTooltip {
 				get {
 					var @field = typeDef.GetFields().FirstOrDefault();
 					if (@field.IsNil)
-						return null;
+						return "(type has no fields; the stored value is the start of its empty field list: the next type's first field row, or one past the end of the Field table)";
 					return GenerateTooltip(ref fieldListTooltip, metadataFile, @field);
 				}
 			}
 
 			[ColumnInfo("X8", Kind = ColumnKind.Token)]
-			public int MethodList => MetadataTokens.GetToken(typeDef.GetMethods().FirstOrDefault());
+			public int MethodList => 0x06000000 | methodList;
 
 			string? methodListTooltip;
 			public string? MethodListTooltip {
 				get {
 					var method = typeDef.GetMethods().FirstOrDefault();
 					if (method.IsNil)
-						return null;
+						return "(type has no methods; the stored value is the start of its empty method list: the next type's first method row, or one past the end of the MethodDef table)";
 					return GenerateTooltip(ref methodListTooltip, metadataFile, method);
 				}
 			}
 
-			public TypeDefEntry(MetadataFile metadataFile, TypeDefinitionHandle handle)
+			readonly int fieldList;
+			readonly int methodList;
+
+			public TypeDefEntry(MetadataFile metadataFile, TypeDefinitionHandle handle, int fieldList, int methodList)
 			{
 				this.metadataFile = metadataFile;
 				this.handle = handle;
+				this.fieldList = fieldList;
+				this.methodList = methodList;
 				typeDef = metadataFile.Metadata.GetTypeDefinition(handle);
 			}
 		}

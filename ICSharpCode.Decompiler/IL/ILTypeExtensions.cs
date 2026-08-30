@@ -17,6 +17,8 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+using System.Linq;
+
 using ICSharpCode.Decompiler.TypeSystem;
 
 namespace ICSharpCode.Decompiler.IL
@@ -162,10 +164,57 @@ namespace ICSharpCode.Decompiler.IL
 		}
 
 		/// <summary>
+		/// Infers the C# type an instruction expects of the child in <paramref name="childIndex"/>,
+		/// i.e. the counterpart to <see cref="InferType"/>: that one asks what a value is, this one
+		/// asks what the position it flows into says it should be.
+		///
+		/// Returns SpecialType.UnknownType where the position names nothing.
+		/// </summary>
+		/// <remarks>
+		/// Where a value's own type is only its stack type - `I4` being `int`, `bool`, `char` and
+		/// every enum at once - the consumer often still knows, because a parameter, a return type
+		/// or a field carries its type in metadata.
+		/// </remarks>
+		public static IType InferExpectedType(this ILInstruction inst, int childIndex, ICompilation? compilation)
+		{
+			switch (inst)
+			{
+				case CallInstruction call:
+					if (childIndex == 0 && call.IsInstanceCall)
+						return call.ConstrainedTo ?? call.Method.DeclaringType;
+					return call.GetParameter(childIndex)?.Type ?? SpecialType.UnknownType;
+				case Leave leave when childIndex == 0:
+					// the value of a leave is a return value only where it leaves the function body
+					var function = leave.Ancestors.OfType<ILFunction>().FirstOrDefault();
+					if (function == null || leave.TargetContainer != function.Body)
+						return SpecialType.UnknownType;
+					return function.Method?.ReturnType ?? SpecialType.UnknownType;
+				case StObj stobj when childIndex == 1:
+					return stobj.Type;
+				case StLoc stloc when childIndex == 0:
+					return stloc.Variable.Type;
+				case IfInstruction ifInst when childIndex == 0:
+					return compilation?.FindType(KnownTypeCode.Boolean) ?? SpecialType.UnknownType;
+				case NewArr newArr:
+					return compilation?.FindType(KnownTypeCode.Int32) ?? SpecialType.UnknownType;
+				default:
+					return SpecialType.UnknownType;
+			}
+		}
+
+		/// <summary>
 		/// Infers the C# type for an IL instruction.
 		/// 
 		/// Returns SpecialType.UnknownType for unsupported instructions.
 		/// </summary>
+		/// <remarks>
+		/// For instructions with StackType.O that produce a value type, or
+		/// instructions with StackType.Ref, we should aim to return the actual type
+		/// instead of SpecialType.UnknownType.
+		/// 
+		/// If not returning UnknownType, must return a type that can store
+		/// the result of the instruction without loss of information.
+		/// </remarks>
 		public static IType InferType(this ILInstruction inst, ICompilation? compilation)
 		{
 			switch (inst)
@@ -242,6 +291,35 @@ namespace ICSharpCode.Decompiler.IL
 					return defaultValue.Type;
 				case ILFunction func when func.DelegateType != null:
 					return func.DelegateType;
+				case IfInstruction ifInst:
+					// For structs and byrefs, we don't want to return Unknown as a fallback to
+					// to FindType(StackType) wouldn't work. Valid IL should have the same
+					// type on both branches so we just return the first that works.
+					var thenType = ifInst.TrueInst.InferType(compilation);
+					if (thenType.CannotBeReconstructedFromStackType())
+					{
+						return thenType;
+					}
+					var elseType = ifInst.FalseInst.InferType(compilation);
+					if (elseType.CannotBeReconstructedFromStackType())
+					{
+						return elseType;
+					}
+					if (thenType.Equals(elseType))
+					{
+						return thenType;
+					}
+					return SpecialType.UnknownType;
+				case SwitchInstruction switchInst:
+					foreach (var section in switchInst.Sections)
+					{
+						var bodyType = section.Body.InferType(compilation);
+						if (bodyType.CannotBeReconstructedFromStackType())
+						{
+							return bodyType;
+						}
+					}
+					return SpecialType.UnknownType;
 				default:
 					return SpecialType.UnknownType;
 			}

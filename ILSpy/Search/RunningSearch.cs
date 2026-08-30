@@ -31,6 +31,7 @@ using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.ILSpyX;
 using ICSharpCode.ILSpyX.Extensions;
+using ICSharpCode.ILSpyX.Instrumentation;
 using ICSharpCode.ILSpyX.Search;
 
 using ICSharpCode.ILSpy.Languages;
@@ -41,7 +42,7 @@ namespace ICSharpCode.ILSpy.Search
 	/// Orchestrates one search across the loaded <see cref="AssemblyList"/>. Walks
 	/// the assemblies serially on a background <see cref="Task"/>, pushes results into
 	/// a thread-safe queue, and the UI thread drains that queue once per render frame
-	/// with a wall-clock budget — the same shape as the WPF SearchPane.
+	/// with a wall-clock budget.
 	/// </summary>
 	internal sealed class RunningSearch
 	{
@@ -52,7 +53,7 @@ namespace ICSharpCode.ILSpy.Search
 		// when the queue is jammed with thousands of late-arriving hits.
 		const int RefreshTimeBudgetMs = 10;
 
-		readonly IReadOnlyList<LoadedAssembly> assemblies;
+		readonly AssemblyList assemblyList;
 		readonly SearchMode mode;
 		readonly string searchTerm;
 		readonly Language language;
@@ -69,7 +70,7 @@ namespace ICSharpCode.ILSpy.Search
 		bool completedRaised;
 
 		public RunningSearch(
-			IReadOnlyList<LoadedAssembly> assemblies,
+			AssemblyList assemblyList,
 			string searchTerm,
 			SearchMode mode,
 			Language language,
@@ -78,7 +79,7 @@ namespace ICSharpCode.ILSpy.Search
 			ObservableCollection<SearchResult> sink,
 			IComparer<SearchResult> sortComparer)
 		{
-			this.assemblies = assemblies;
+			this.assemblyList = assemblyList;
 			this.searchTerm = searchTerm;
 			this.mode = mode;
 			this.language = language;
@@ -122,7 +123,7 @@ namespace ICSharpCode.ILSpy.Search
 			RaiseCompletedIfFirst();
 		}
 
-		void RunSearch(CancellationToken ct)
+		async Task RunSearch(CancellationToken ct)
 		{
 			try
 			{
@@ -130,20 +131,17 @@ namespace ICSharpCode.ILSpy.Search
 				var strategy = GetStrategy(request);
 				if (strategy == null)
 					return;
-				// Serial walk: per-assembly metadata walk is allocation-dominated, and 4
-				// parallel producers fighting for the ConcurrentQueue + the resulting UI
-				// batching jitter end up slower than serial in practice.
-				foreach (var assembly in assemblies)
+				// The per-assembly metadata walk is allocation-dominated, and 4 parallel
+				// producers fighting for the ConcurrentQueue + the resulting UI batching
+				// jitter end up slower than walking the assemblies one at a time.
+				await foreach (var assembly in assemblyList.EnumerateAllAssemblies(ct).ConfigureAwait(false))
 				{
 					if (ct.IsCancellationRequested)
 						break;
 					MetadataFile? module;
 					try
 					{
-						// Block here — we're already on a worker thread (Task.Run) and
-						// this matches the WPF call shape. ConfigureAwait in an async
-						// state machine would just add overhead for the same effect.
-						module = assembly.GetMetadataFileAsync().GetAwaiter().GetResult();
+						module = await assembly.GetMetadataFileAsync().ConfigureAwait(false);
 					}
 					catch (OperationCanceledException)
 					{
@@ -158,6 +156,7 @@ namespace ICSharpCode.ILSpy.Search
 					}
 					if (module == null)
 						continue;
+					ILSpyXEventSource.Log.SearchModuleStart(module, strategy);
 					try
 					{
 						strategy.Search(module, ct);
@@ -171,6 +170,10 @@ namespace ICSharpCode.ILSpy.Search
 						// One bad assembly's strategy walker (malformed metadata, missing
 						// dependency, internal assert) — keep the run going instead of
 						// faulting the whole search.
+					}
+					finally
+					{
+						ILSpyXEventSource.Log.SearchModuleStop(module, strategy);
 					}
 				}
 			}

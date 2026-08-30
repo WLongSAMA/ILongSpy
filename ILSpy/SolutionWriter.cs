@@ -38,7 +38,15 @@ namespace ICSharpCode.ILSpy
 	/// solution was produced and the human-readable status report (the same breadcrumb the WPF
 	/// version printed into the decompiler text view).
 	/// </summary>
-	public sealed record SolutionExportResult(bool Success, string StatusText);
+	public sealed record SolutionExportResult(bool Success, string StatusText)
+	{
+		/// <summary>
+		/// What the decompiler could not handle while exporting. These are recovered failures - the
+		/// affected code was replaced by the error text and the export ran to completion - so they
+		/// do not make <see cref="Success"/> false; the caller renders them for the user to report.
+		/// </summary>
+		public IReadOnlyList<DecompilerException> Errors { get; init; } = [];
+	}
 
 	/// <summary>
 	/// Creates a Visual Studio solution containing one decompiled project per assembly. The
@@ -82,7 +90,15 @@ namespace ICSharpCode.ILSpy
 		readonly IProgress<DecompilationProgress>? progress;
 		readonly ConcurrentBag<ProjectItem> projects;
 		readonly ConcurrentBag<string> statusOutput;
-		int completedAssemblies;
+		readonly ConcurrentBag<DecompilerException> decompilationErrors = new();
+
+		// How far each project has got, keyed by assembly short name -- unique, because duplicate names
+		// abort the export before any project runs. The workers fill these in as they decompile and the
+		// progress bar shows their sum.
+		readonly ConcurrentDictionary<string, ProjectProgress> projectProgress;
+		// The projects in selection order, so the status label lists them in a stable order rather than
+		// in whatever order the workers happen to reach them.
+		string[] projectOrder;
 
 		SolutionWriter(string solutionFilePath, DecompilerSettings settings, string? strongNameKeyFile,
 			IProgress<DecompilationProgress>? progress)
@@ -94,6 +110,32 @@ namespace ICSharpCode.ILSpy
 			solutionDirectory = Path.GetDirectoryName(solutionFilePath)!;
 			statusOutput = new ConcurrentBag<string>();
 			projects = new ConcurrentBag<ProjectItem>();
+			projectProgress = new ConcurrentDictionary<string, ProjectProgress>();
+			projectOrder = Array.Empty<string>();
+		}
+
+		/// <summary>How much of one project's file list has been written, and whether it is still running.</summary>
+		sealed class ProjectProgress
+		{
+			public int FilesWritten;
+			public int FileCount;
+			public bool Running;
+		}
+
+		/// <summary>
+		/// Feeds one project's file counts into the shared total. <see cref="WholeProjectDecompiler"/>
+		/// reports its whole file count with every report, so the solution bar knows a project's size from
+		/// its first written file rather than only once the project is done.
+		/// </summary>
+		sealed class ProjectProgressReporter(SolutionWriter writer, ProjectProgress project)
+			: IProgress<DecompilationProgress>
+		{
+			public void Report(DecompilationProgress value)
+			{
+				project.FileCount = value.TotalUnits;
+				project.FilesWritten = value.UnitsCompleted;
+				writer.ReportProgress();
+			}
 		}
 
 		async Task<SolutionExportResult> CreateSolutionAsync(IReadOnlyList<LoadedAssembly> allAssemblies,
@@ -123,13 +165,15 @@ namespace ICSharpCode.ILSpy
 			if (abort)
 				return new SolutionExportResult(false, report.ToString());
 
+			projectOrder = allAssemblies.Select(a => a.ShortName).ToArray();
+
 			try
 			{
 				// An explicit enumerable partitioner avoids Parallel.ForEach's list special-casing,
 				// whose static partitioning is inefficient when assemblies decompile at different speeds.
 				await Task.Run(() => System.Threading.Tasks.Parallel.ForEach(Partitioner.Create(allAssemblies),
 					new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount, CancellationToken = ct },
-					item => WriteProject(item, language, solutionDirectory, allAssemblies.Count, ct)))
+					item => WriteProject(item, language, solutionDirectory, ct)))
 					.ConfigureAwait(false);
 
 				if (projects.Count == 0)
@@ -171,7 +215,7 @@ namespace ICSharpCode.ILSpy
 
 			// statusOutput only collects per-assembly failures; an empty bag means every project built.
 			if (statusOutput.Count != 0)
-				return new SolutionExportResult(false, report.ToString());
+				return new SolutionExportResult(false, report.ToString()) { Errors = [.. decompilationErrors] };
 
 			report.AppendLine("Successfully decompiled the following assemblies into Visual Studio projects:");
 			foreach (var n in allAssemblies)
@@ -180,18 +224,71 @@ namespace ICSharpCode.ILSpy
 			if (allAssemblies.Count == projects.Count)
 				report.AppendLine("Created the Visual Studio Solution file.");
 
-			return new SolutionExportResult(true, report.ToString());
+			return new SolutionExportResult(true, report.ToString()) { Errors = [.. decompilationErrors] };
 		}
 
-		void WriteProject(LoadedAssembly loadedAssembly, Language language, string targetDirectory, int totalAssemblies, CancellationToken ct)
+		// Reports the whole solution's progress: the file counts of every project added up. The projects
+		// are decompiled in parallel, so no single one of them can drive the bar; summing them lets it
+		// move continuously and, because a project reports its file count as soon as it writes its first
+		// file, turn determinate right after the export starts. Racing reads are fine here -- the worst a
+		// report that races a worker can be is a file or two out of date.
+		void ReportProgress()
 		{
-			// Solution export decompiles assemblies in parallel, so per-file progress would race; report
-			// at the coarser assembly granularity instead -- a determinate bar over the assembly count.
-			void ReportDone() => progress?.Report(new DecompilationProgress {
-				TotalUnits = totalAssemblies,
-				UnitsCompleted = System.Threading.Interlocked.Increment(ref completedAssemblies),
-				Status = loadedAssembly.ShortName,
+			if (progress == null)
+				return;
+
+			int filesWritten = 0, fileCount = 0;
+			foreach (var project in projectProgress.Values)
+			{
+				filesWritten += project.FilesWritten;
+				fileCount += project.FileCount;
+			}
+
+			progress.Report(new DecompilationProgress {
+				TotalUnits = fileCount,
+				UnitsCompleted = filesWritten,
+				Title = "Exporting solution...",
+				Status = RunningProjects(),
 			});
+		}
+
+		// The projects being written right now, so the label says what is running instead of naming
+		// whichever project happened to report last. Long selections are cut short: the bar is not the
+		// place to list twenty assemblies.
+		string RunningProjects()
+		{
+			const int maxNames = 3;
+			var running = projectOrder
+				.Where(name => projectProgress.TryGetValue(name, out var project) && project.Running)
+				.ToList();
+			return running.Count <= maxNames
+				? string.Join(", ", running)
+				: string.Join(", ", running.Take(maxNames)) + $" and {running.Count - maxNames} more";
+		}
+
+		void WriteProject(LoadedAssembly loadedAssembly, Language language, string targetDirectory, CancellationToken ct)
+		{
+			var project = new ProjectProgress { Running = true };
+			projectProgress[loadedAssembly.ShortName] = project;
+			ReportProgress();
+			try
+			{
+				WriteProjectCore(loadedAssembly, language, targetDirectory, project, ct);
+			}
+			finally
+			{
+				// Whatever became of the project -- written, bailed out before it started, or cancelled --
+				// it stops counting against the total here. Leaving an abandoned project's files
+				// outstanding would strand the bar short of the end for the rest of the export.
+				project.FilesWritten = project.FileCount;
+				project.Running = false;
+				ReportProgress();
+			}
+		}
+
+		void WriteProjectCore(LoadedAssembly loadedAssembly, Language language, string targetDirectory,
+			ProjectProgress project, CancellationToken ct)
+		{
 			targetDirectory = Path.Combine(targetDirectory, loadedAssembly.ShortName);
 
 			if (language.ProjectFileExtension == null)
@@ -230,10 +327,17 @@ namespace ICSharpCode.ILSpy
 				options.CancellationToken = ct;
 				options.SaveAsProjectDirectory = targetDirectory;
 				options.StrongNameKeyFile = strongNameKeyFile;
+				options.ProgressIndicator = new ProjectProgressReporter(this, project);
 
 				// The project-export path writes the .csproj into SaveAsProjectDirectory itself; the
 				// ITextOutput only receives a "Project written to ..." breadcrumb, which we discard here.
 				var projectInfo = language.DecompileAssembly(loadedAssembly, new PlainTextOutput(new StringWriter()), options);
+				// Recovered failures travel on the result, not in statusOutput: a non-empty
+				// statusOutput means the solution is incomplete, and these projects did get written.
+				foreach (var error in options.DecompilationErrors)
+				{
+					decompilationErrors.Add(error);
+				}
 				if (projectInfo != null)
 				{
 					// SolutionCreator.FixAllProjectReferences parses each project file off disk, so the
@@ -260,7 +364,6 @@ namespace ICSharpCode.ILSpy
 				statusOutput.Add("-------------");
 				statusOutput.Add($"Failed to decompile the assembly '{loadedAssembly.FileName}':{Environment.NewLine}{e}");
 			}
-			ReportDone();
 		}
 	}
 }

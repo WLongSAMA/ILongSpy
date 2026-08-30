@@ -1,3 +1,21 @@
+// Copyright (c) 2019 Siegfried Pammer
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this
+// software and associated documentation files (the "Software"), to deal in the Software
+// without restriction, including without limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
+// to whom the Software is furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all copies or
+// substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+// FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -60,6 +78,45 @@ namespace ICSharpCode.Decompiler.Tests
 		public void Members()
 		{
 			TestSequencePoints(knownResidual: true);
+		}
+
+		[Test]
+		public void MemberInitializers()
+		{
+			(string peFileName, _) = CompileTestCase(nameof(MemberInitializers));
+
+			var module = new PEFile(peFileName);
+			var resolver = new UniversalAssemblyResolver(peFileName, false,
+				module.Metadata.DetectTargetFrameworkId(), null, PEStreamOptions.PrefetchEntireImage);
+			var decompiler = new CSharpDecompiler(module, resolver, new DecompilerSettings());
+
+			using var generatedPdb = new MemoryStream();
+			new PortablePdbWriter { NoLogo = true }
+				.WritePdb(module, decompiler, new DecompilerSettings(), generatedPdb);
+
+			var methodNames = PdbSequencePoints.ReadMethodNames(peFileName);
+			var actual = PdbSequencePoints.Read(generatedPdb);
+			var constructorRows = methodNames
+				.Where(pair => pair.Value == "MemberInitializers..ctor")
+				.Select(pair => pair.Key)
+				.ToArray();
+
+			Assert.That(constructorRows, Has.Length.EqualTo(2),
+				"the fixture must keep both overloaded constructors");
+			foreach (int row in constructorRows)
+			{
+				Assert.That(actual, Does.ContainKey(row),
+					$"constructor method row 0x{0x06000000 | row:x8} has no generated sequence points");
+				var visibleStartLines = actual[row]
+					.Where(point => !point.IsHidden)
+					.Select(point => point.StartLine)
+					.ToArray();
+
+				Assert.That(visibleStartLines, Does.Contain(5),
+					"the instance field initializer must be mapped in every constructor");
+				Assert.That(visibleStartLines, Does.Contain(7),
+					"the auto-property initializer must be mapped in every constructor");
+			}
 		}
 
 		[Test]
@@ -481,6 +538,51 @@ namespace ICSharpCode.Decompiler.Tests
 			{
 				Assert.That(residual, Is.Empty, "the reconstructed breakpoint map differs from the compiler's:\n" + residual);
 			}
+		}
+
+		[Test]
+		public void MemberInitializerSingleCtor()
+		{
+			// The lifted field and auto-property initializers must be breakpointable in the single
+			// explicit constructor.
+			TestSequencePoints(knownResidual: true);
+		}
+
+		[Test]
+		public void MemberInitializerChainedCtors()
+		{
+			// The non-chained constructor breakpoints the initializers; the this()-chained constructor
+			// does not run them and must not.
+			TestSequencePoints(knownResidual: true);
+		}
+
+		[Test]
+		public void MemberInitializerImplicitCtor()
+		{
+			// The compiler-generated default constructor runs the initializers and must breakpoint them.
+			TestSequencePoints(knownResidual: true);
+		}
+
+		[Test]
+		public void MemberInitializerStaticCtor()
+		{
+			// Static initializers run in the implicit static constructor and must be breakpointable there.
+			TestSequencePoints(knownResidual: true);
+		}
+
+		[Test]
+		public void MemberInitializerPrimaryCtor()
+		{
+			// The field initializer runs in the primary constructor (whose body is never printed) and
+			// must be breakpointable there.
+			TestSequencePoints(knownResidual: true);
+		}
+
+		[Test]
+		public void MemberInitializerEvents()
+		{
+			// A field-like event initializer runs in every instance constructor, like a field.
+			TestSequencePoints(knownResidual: true);
 		}
 
 		private static void CompileCSharpWithPdb(string outputBase, string sourceFile)

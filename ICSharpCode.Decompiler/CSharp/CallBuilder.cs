@@ -329,6 +329,46 @@ namespace ICSharpCode.Decompiler.CSharp
 				&& method.Parameters[0].Type.IsKnownType(KnownTypeCode.String);
 		}
 
+		/// <summary>
+		/// Matches MemoryExtensions.AsSpan(string), the helper the C# 14 compiler emits for the
+		/// implicit span conversion from string to ReadOnlySpan&lt;char&gt;.
+		/// </summary>
+		internal static bool IsStringToReadOnlySpanCharAsSpan(IMethod method)
+		{
+			return method is { IsStatic: true, Name: "AsSpan", Parameters.Count: 1, TypeArguments.Count: 0 }
+				&& method.DeclaringType.FullName == "System.MemoryExtensions"
+				&& method.ReturnType.IsKnownType(KnownTypeCode.ReadOnlySpanOfT)
+				&& method.ReturnType.TypeArguments[0].IsKnownType(KnownTypeCode.Char)
+				&& method.Parameters[0].Type.IsKnownType(KnownTypeCode.String);
+		}
+
+		/// <summary>
+		/// Matches ReadOnlySpan&lt;To&gt;.CastUp&lt;From&gt;(ReadOnlySpan&lt;From&gt;), the helper the
+		/// C# 14 compiler emits for the covariant implicit span conversion.
+		/// </summary>
+		internal static bool IsReadOnlySpanCastUp(IMethod method)
+		{
+			return method is { IsStatic: true, Name: "CastUp", Parameters.Count: 1, TypeArguments.Count: 1 }
+				&& method.DeclaringType.IsKnownType(KnownTypeCode.ReadOnlySpanOfT)
+				&& method.Parameters[0].Type.IsKnownType(KnownTypeCode.ReadOnlySpanOfT);
+		}
+
+		// Gets whether a call to `method` is equivalent to an implicit span conversion.
+		static bool IsEquivalentToSpanConversion(IMethod method)
+		{
+			if (method.DeclaringType.IsKnownType(KnownTypeCode.SpanOfT)
+				|| method.DeclaringType.IsKnownType(KnownTypeCode.ReadOnlySpanOfT))
+			{
+				if (method.IsOperator
+					&& method.Name == "op_Implicit")
+				{
+					return true;
+				}
+			}
+			return IsStringToReadOnlySpanCharAsSpan(method)
+				|| IsReadOnlySpanCastUp(method);
+		}
+
 		public ExpressionWithResolveResult Build(OpCode callOpCode, IMethod method,
 			IReadOnlyList<ILInstruction> callArguments,
 			IReadOnlyList<int>? argumentToParameterMap = null,
@@ -479,6 +519,21 @@ namespace ICSharpCode.Decompiler.CSharp
 			{
 				argumentList.CheckNoNamedOrOptionalArguments();
 				return HandleImplicitConversion(method, argumentList.Arguments[0]);
+			}
+
+			if (settings.FirstClassSpanTypes && argumentList.Length == 1
+				&& (IsStringToReadOnlySpanCharAsSpan(method) || IsReadOnlySpanCastUp(method)))
+			{
+				// The C# 14 compiler emits these helpers for implicit span conversions; fold the
+				// call back into the conversion. Only safe when the conversion actually applies
+				// to this argument type - otherwise keep the call (e.g. AsSpan on a null literal).
+				var spanConv = CSharpConversions.Get(expressionBuilder.compilation)
+					.ImplicitConversion(argumentList.Arguments[0].Type, method.ReturnType);
+				if (spanConv.IsImplicitSpanConversion)
+				{
+					argumentList.CheckNoNamedOrOptionalArguments();
+					return HandleImplicitConversion(method, argumentList.Arguments[0]);
+				}
 			}
 
 			if (settings.InlineArrays
@@ -1020,10 +1075,28 @@ namespace ICSharpCode.Decompiler.CSharp
 				}
 
 				arg = arg.ConvertTo(parameterType, expressionBuilder, allowImplicitConversion: arg.Type.Kind != TypeKind.Dynamic);
+				if (method.IsOperator)
+				{
+					// Operator calls do not survive as calls: ReplaceMethodCallsWithOperators turns
+					// them into operator or cast syntax, where the operand determines which operator
+					// is resolved, so it must keep its explicit type. Unlike the null literal, which
+					// still narrows the candidate set, the default literal converts to every type:
+					// C# rejects it as the operand of any binary operator except == and != (CS8310).
+					arg = arg.RestoreDefaultLiteralType(expressionBuilder);
+				}
 
 				if (parameter.ReferenceKind != ReferenceKind.None)
 				{
 					arg = ExpressionBuilder.ChangeDirectionExpressionTo(arg, parameter.ReferenceKind, callArguments[i] is AddressOf);
+					// An rvalue bound to an 'in' parameter loses its DirectionExpression above and
+					// is an ordinary value expression: give a span conversion the same chance to
+					// become implicit that by-value arguments get from the ConvertTo call above.
+					if (arg.Expression is not DirectionExpression
+						&& parameter.Type.SkipModifiers() is ByReferenceType brt
+						&& arg.ResolveResult is ConversionResolveResult { Conversion.IsImplicitSpanConversion: true })
+					{
+						arg = arg.ConvertTo(brt.ElementType, expressionBuilder, allowImplicitConversion: true);
+					}
 				}
 
 				arguments.Add(arg);
@@ -1201,9 +1274,22 @@ namespace ICSharpCode.Decompiler.CSharp
 				// if necessary.
 				if (!CanInferTypeArgumentsFromArguments(method, argumentList, expressionBuilder.typeInference))
 				{
-					requireTypeArguments = true;
-					typeArguments = method.TypeArguments.ToArray();
-					appliedRequireTypeArgumentsShortcut = true;
+					if (settings.AnonymousTypes
+						&& method.TypeArguments.Any(a => a.ContainsAnonymousType())
+						&& PinTypesOfNullArguments(argumentList)
+						&& CanInferTypeArgumentsFromArguments(method, argumentList, expressionBuilder.typeInference))
+					{
+						// Anonymous types cannot be written as explicit type arguments; instead the
+						// null arguments were rewritten so that all type arguments are inferable.
+						requireTypeArguments = false;
+						typeArguments = Empty<IType>.Array;
+					}
+					else
+					{
+						requireTypeArguments = true;
+						typeArguments = method.TypeArguments.ToArray();
+						appliedRequireTypeArgumentsShortcut = true;
+					}
 				}
 				else
 				{
@@ -1378,6 +1464,58 @@ namespace ICSharpCode.Decompiler.CSharp
 			return success;
 		}
 
+		/// <summary>
+		/// C# has no syntax to spell out an anonymous type, so a null literal cannot be given such
+		/// a type with a cast. The minimal expression that produces a null value of an anonymous
+		/// type is a conditional expression whose never-taken branch creates an instance of the
+		/// type: <c>true ? null : new { A = default(int) }</c>.
+		/// Replaces null-literal arguments of an anonymous type with such an expression, so that
+		/// type arguments involving anonymous types (which cannot be written explicitly either)
+		/// become inferable from the arguments.
+		/// Returns true, if at least one argument was replaced.
+		/// </summary>
+		private bool PinTypesOfNullArguments(ArgumentList argumentList)
+		{
+			bool anyArgumentReplaced = false;
+			for (int i = 0; i < argumentList.Length; i++)
+			{
+				IType expectedType = argumentList.ExpectedParameters[i].Type;
+				if (argumentList.Arguments[i].Expression is not NullReferenceExpression)
+					continue;
+				if (!expectedType.IsAnonymousType() || NewAnonymousTypeInstance(expectedType) is not NewObj newObj)
+					continue;
+				var nullLiteral = argumentList.Arguments[i];
+				argumentList.Arguments[i] = new ConditionalExpression(new PrimitiveExpression(true),
+						nullLiteral.Expression.Detach(), expressionBuilder.Translate(newObj, expectedType))
+					.WithILInstruction(nullLiteral.ILInstructions)
+					.WithRR(new ResolveResult(expectedType));
+				anyArgumentReplaced = true;
+			}
+			return anyArgumentReplaced;
+		}
+
+		/// <summary>
+		/// Builds a 'newobj' instruction creating an instance of the anonymous type
+		/// <paramref name="type"/> with default property values; translating it yields
+		/// object-initializer syntax, the only way to name the type in source code. Returns null
+		/// if a property type involves an anonymous type other than by direct nesting (e.g. an
+		/// array of anonymous type), because its default value expression would have to name it.
+		/// </summary>
+		private NewObj? NewAnonymousTypeInstance(IType type)
+		{
+			var newObj = new NewObj(type.GetConstructors().Single());
+			foreach (var parameter in newObj.Method.Parameters)
+			{
+				ILInstruction? argument = parameter.Type.IsAnonymousType()
+					? NewAnonymousTypeInstance(parameter.Type)
+					: parameter.Type.ContainsAnonymousType() ? null : new DefaultValue(parameter.Type);
+				if (argument == null)
+					return null;
+				newObj.Arguments.Add(argument);
+			}
+			return newObj;
+		}
+
 		private void CastArguments(IList<TranslatedExpression> arguments, IList<IParameter> expectedParameters)
 		{
 			for (int i = 0; i < arguments.Count; i++)
@@ -1470,7 +1608,15 @@ namespace ICSharpCode.Decompiler.CSharp
 			var conversions = CSharpConversions.Get(expressionBuilder.compilation);
 			IType targetType = method.ReturnType;
 			var conv = conversions.ImplicitConversion(argument.Type, targetType);
-			if (!(conv.IsUserDefined && conv.IsValid && conv.Method.Equals(method, NormalizeTypeVisitor.TypeErasure)))
+			// The compiler emits an implicit span conversion as a call to one of the span types'
+			// own members, so such a call is the conversion and folding it back is exact. Any
+			// other method reaching this point is a user-defined conversion operator, which only
+			// the user-defined conversion resolving to that very operator may be folded into.
+			bool directlyConvertible = conv.IsValid
+				&& (conv.IsUserDefined
+					? conv.Method.Equals(method, NormalizeTypeVisitor.TypeErasure)
+					: conv.IsImplicitSpanConversion && IsEquivalentToSpanConversion(method));
+			if (!directlyConvertible)
 			{
 				// implicit conversion to targetType isn't directly possible, so first insert a cast to the argument type
 				argument = argument.ConvertTo(method.Parameters[0].Type, expressionBuilder);
@@ -1578,6 +1724,13 @@ namespace ICSharpCode.Decompiler.CSharp
 			if (or.IsAmbiguous)
 				return OverloadResolutionErrors.AmbiguousMatch;
 			foundMember = or.GetBestCandidateWithSubstitutedTypeArguments();
+			if (foundMember == null)
+			{
+				// Overload resolution reports no error for an empty candidate set - there is no
+				// best candidate to carry one - so a call that matched nothing has to be reported
+				// as unresolvable here.
+				return OverloadResolutionErrors.AmbiguousMatch;
+			}
 			if (!IsAppropriateCallTarget(expectedTargetDetails, method, foundMember))
 				return OverloadResolutionErrors.AmbiguousMatch;
 			var map = or.GetArgumentToParameterMap();
@@ -1766,6 +1919,22 @@ namespace ICSharpCode.Decompiler.CSharp
 				}
 			}
 			return false;
+		}
+
+
+		/// <summary>
+		/// Checks whether calling `target.methodName()` will use `expected` as the method to invoke.
+		/// </summary>
+		public bool CheckSimpleCall(ResolveResult target, IMethod expected, OpCode expectedCallOpCode = OpCode.Call)
+		{
+			var details = new ExpectedTargetDetails { CallOpCode = expectedCallOpCode, NeedsBoxingConversion = false };
+			if (resolver.ResolveMemberAccess(target, expected.Name, [], NameLookupMode.InvocationTarget)
+			is not MethodGroupResolveResult mgrr)
+				return false;
+			var or = mgrr.PerformOverloadResolution(typeSystem, []);
+			if (or.BestCandidateErrors != OverloadResolutionErrors.None || or.IsAmbiguous)
+				return false;
+			return IsAppropriateCallTarget(details, expected, or.GetBestCandidateWithSubstitutedTypeArguments()!);
 		}
 
 		ExpressionWithResolveResult HandleConstructorCall(ExpectedTargetDetails expectedTargetDetails, ResolveResult? target, IMethod method, ArgumentList argumentList)

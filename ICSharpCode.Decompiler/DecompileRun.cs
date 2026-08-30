@@ -35,11 +35,20 @@ namespace ICSharpCode.Decompiler
 		public IDocumentationProvider DocumentationProvider { get; set; }
 		public Dictionary<ITypeDefinition, RecordDecompiler> RecordDecompilers { get; } = new Dictionary<ITypeDefinition, RecordDecompiler>();
 
+#nullable enable
+		/// <summary>
+		/// Memoized AutoEventDecompiler verdicts (null = the event is not automatic). Shared so
+		/// that every consumer of the verdict (member hiding, the event declaration, reference
+		/// translation) decides from the same analysis.
+		/// </summary>
+		public Dictionary<IEvent, IField?> AutomaticEvents { get; } = new Dictionary<IEvent, IField?>();
+#nullable restore
+
 		public Dictionary<ITypeDefinition, bool> TypeHierarchyIsKnown { get; } = new();
 
-		public CSharp.TypeSystem.UsingScope UsingScope { get; }
+		public UsingScope UsingScope { get; }
 
-		public DecompileRun(DecompilerSettings settings, CSharp.TypeSystem.UsingScope usingScope)
+		public DecompileRun(DecompilerSettings settings, UsingScope usingScope)
 		{
 			this.Settings = settings ?? throw new ArgumentNullException(nameof(settings));
 			this.UsingScope = usingScope ?? throw new ArgumentNullException(nameof(usingScope));

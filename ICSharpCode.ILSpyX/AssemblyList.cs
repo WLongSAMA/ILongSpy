@@ -95,7 +95,10 @@ namespace ICSharpCode.ILSpyX
 		{
 			foreach (var asm in listElement.Elements("Assembly"))
 			{
-				OpenAssembly((string)asm);
+				var loaded = OpenAssembly((string)asm);
+				// Lazy detection has not run yet, so seeding the override here makes it effective
+				// for the first resolution without a reload. Absent attribute -> null (auto-detect).
+				loaded.TargetFrameworkIdOverride = (string?)asm.Attribute("TargetFramework");
 			}
 			this.dirty = false; // OpenAssembly() sets dirty, so reset it afterwards
 		}
@@ -158,6 +161,15 @@ namespace ICSharpCode.ILSpyX
 			return GetSnapshot().GetAllAssembliesAsync();
 		}
 
+		/// <summary>
+		/// Streaming variant of <see cref="GetAllAssemblies"/>, for consumers that can act on each
+		/// assembly as it loads instead of waiting for the whole list.
+		/// </summary>
+		public IAsyncEnumerable<LoadedAssembly> EnumerateAllAssemblies(CancellationToken cancellationToken = default)
+		{
+			return GetSnapshot().EnumerateAllAssembliesAsync(cancellationToken);
+		}
+
 		public int Count {
 			get {
 				lock (lockObj)
@@ -175,7 +187,10 @@ namespace ICSharpCode.ILSpyX
 			return new XElement(
 				"List",
 				new XAttribute("name", this.ListName),
-				assemblies.Where(asm => !asm.IsAutoLoaded).Select(asm => new XElement("Assembly", asm.FileName))
+				assemblies.Where(asm => !asm.IsAutoLoaded).Select(asm => new XElement("Assembly", asm.FileName,
+					asm.TargetFrameworkIdOverride != null
+						? new XAttribute("TargetFramework", asm.TargetFrameworkIdOverride)
+						: null))
 			);
 		}
 
@@ -387,6 +402,9 @@ namespace ICSharpCode.ILSpyX
 				fileLoaders: manager?.LoaderRegistry,
 				applyWinRTProjections: ApplyWinRTProjections, useDebugSymbols: UseDebugSymbols);
 			newAsm.IsAutoLoaded = target.IsAutoLoaded;
+			// Carry the framework hint across the reload (set before any resolution on the fresh
+			// instance) so the references re-resolve against the overridden target framework.
+			newAsm.TargetFrameworkIdOverride = target.TargetFrameworkIdOverride;
 			lock (lockObj)
 			{
 				this.assemblies.Remove(target);

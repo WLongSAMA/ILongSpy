@@ -48,8 +48,6 @@ namespace ICSharpCode.ILSpy.TextView
 	/// </summary>
 	public sealed class DocumentationRenderer
 	{
-		static readonly IBrush HyperlinkBrush = new SolidColorBrush(Color.FromRgb(0x00, 0x66, 0xCC));
-
 		readonly IAmbience ambience;
 		readonly FontFamily codeFont;
 		readonly double fontSize;
@@ -118,14 +116,18 @@ namespace ICSharpCode.ILSpy.TextView
 				VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
 				MaxHeight = maxHeight,
 			};
-			return new Border {
+			var border = new Border {
 				BorderThickness = new Thickness(1),
-				BorderBrush = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
-				Background = new SolidColorBrush(Color.FromRgb(0xFC, 0xFC, 0xFC)),
 				Padding = new Thickness(6),
 				MaxWidth = maxWidth,
 				Child = scroll,
 			};
+			// The signature text is coloured by the active highlighting theme, so the chrome
+			// must follow the same theme variant: dark-theme text on a fixed light fill is
+			// unreadable. DynamicResource-style bindings keep it in sync on theme switches.
+			border.Bind(Border.BackgroundProperty, border.GetResourceObservable("ILSpy.DocTooltipBackground"));
+			border.Bind(Border.BorderBrushProperty, border.GetResourceObservable("ILSpy.DocTooltipBorder"));
+			return border;
 		}
 
 		public void AddSignatureBlock(RichText signature)
@@ -136,9 +138,8 @@ namespace ICSharpCode.ILSpy.TextView
 
 			// Wrap rather than NoWrap so a signature wider than the popup's MaxWidth folds
 			// to multiple lines instead of being clipped at the right edge — the outer
-			// ScrollViewer disables horizontal scrolling, so NoWrap meant "the right half
-			// of long generic method signatures is invisible". WPF parity: the equivalent
-			// FlowDocument Paragraph wraps by default (Paragraph doesn't even support NoWrap).
+			// ScrollViewer disables horizontal scrolling, so NoWrap would leave the right
+			// half of long generic method signatures invisible.
 			var block = new SelectableTextBlock {
 				FontFamily = codeFont,
 				FontSize = fontSize,
@@ -161,7 +162,7 @@ namespace ICSharpCode.ILSpy.TextView
 			}
 			catch (XmlException)
 			{
-				// Malformed XML in the .xml file — ignore as WPF does.
+				// Malformed XML in the .xml file — ignore it rather than failing the tooltip.
 			}
 		}
 
@@ -393,8 +394,8 @@ namespace ICSharpCode.ILSpy.TextView
 		// embedded TextBlock inside an InlineUIContainer.
 		static TextBlock CreateLinkTextBlock()
 		{
+			// Foreground comes from the App.axaml "doc-link" style so it follows the theme.
 			return new TextBlock {
-				Foreground = HyperlinkBrush,
 				TextDecorations = TextDecorations.Underline,
 				Cursor = new Cursor(StandardCursorType.Hand),
 				// A null background makes the TextBlock hit-test invisible — clicks would

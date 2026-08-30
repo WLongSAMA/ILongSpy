@@ -2,15 +2,15 @@
 
 To install:
 
-```
+``` bash
 dotnet tool install --global ilspycmd
 ```
 
 Help output (`ilspycmd --help`):
 
-```
-ilspycmd: 10.1.0.8361
-ICSharpCode.Decompiler: 10.1.0.8361
+``` text
+ilspycmd: 11.0.0.9283
+ICSharpCode.Decompiler: 11.0.0.9283
 
 dotnet tool for decompiling .NET assemblies and generating portable PDBs
 
@@ -26,6 +26,9 @@ Options:
   -p|--project                            Decompile assembly as compilable project. This requires the output directory
                                           option.
   -t|--type <type-name>                   The fully qualified name of the type to decompile.
+  -m|--member <doc-id-or-token>           The single member to decompile: an XML documentation id string (e.g.
+                                          "M:System.String.Concat(System.String,System.String)", as also accepted by the
+                                          UI's --navigateto option) or a metadata token (e.g. 0x06000005).
   -il|--ilcode                            Show IL code.
   --il-sequence-points                    Show IL with sequence points. Implies -il.
   -genpdb|--generate-pdb                  Generate PDB.
@@ -38,17 +41,25 @@ Options:
                                           whose name ends with '.baml' are decompiled to XAML.
   --decompile-baml                        When used with -p, decompile BAML resources to XAML files (Page items) instead
                                           of leaving them as raw byte streams.
+  --dump-table <table>                    Dump a metadata table: prints RID, token, names, heap offsets and coded
+                                          indexes of every row. <table> is the ECMA-335 table name (e.g. TypeDef,
+                                          Property, MethodSemantics; case-insensitive) or table number (decimal or
+                                          0x-prefixed hex, e.g. 0x17).
+  --json                                  Output as JSON. Currently only supported together with --dump-table.
   -lv|--languageversion <version>         C# Language version: CSharp1, CSharp2, CSharp3, CSharp4, CSharp5, CSharp6,
                                           CSharp7, CSharp7_1, CSharp7_2, CSharp7_3, CSharp8_0, CSharp9_0, CSharp10_0,
                                           CSharp11_0, CSharp12_0, CSharp13_0, Preview or Latest
                                           Allowed values are: CSharp1, CSharp2, CSharp3, CSharp4, CSharp5, CSharp6,
                                           CSharp7, CSharp7_1, CSharp7_2, CSharp7_3, CSharp8_0, CSharp9_0, CSharp10_0,
-                                          CSharp11_0, CSharp12_0, CSharp13_0, CSharp14_0, Preview, Latest.
+                                          CSharp11_0, CSharp12_0, CSharp13_0, CSharp14_0, CSharp15_0, Preview, Latest.
                                           Default value is: Latest.
   --ilspy-settingsfile <path>             Path to an ILSpy settings file.
   -ds|--decompiler-setting <value>        Set a decompiler setting. Use multiple times to set multiple settings.
   -r|--referencepath <path>               Path to a directory containing dependencies of the assembly that is being
                                           decompiled.
+  --ignore-decompilation-errors           Exit with success even when parts of the assembly could not be decompiled. The
+                                          affected code carries the error text in the output and the failures are listed
+                                          on stderr either way; only the exit status changes.
   --no-dead-code                          Remove dead code.
   --no-dead-stores                        Remove dead stores.
   -d|--dump-package                       Dump package assemblies into a folder. This requires the output directory

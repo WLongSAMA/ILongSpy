@@ -18,6 +18,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Linq;
 
@@ -46,7 +47,7 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 	}
 
 	/// <summary>
-	/// Implements C# 4.0 Type Inference (§7.5.2).
+	/// Implements C# type inference (C# spec draft-v11: §12.6.3).
 	/// </summary>
 	public sealed class TypeInference
 	{
@@ -242,8 +243,18 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 				// Exact bounds need to stored separately, not just as Lower+Upper bounds,
 				// due to TypeInferenceTests.GenericArgumentImplicitlyConvertibleToAndFromAnotherTypeList (see #281)
 				if (ExactBound == null)
+				{
 					ExactBound = type;
-				else if (!ExactBound.Equals(type))
+					return;
+				}
+				if (ExactBound.Equals(type))
+					return;
+				// Two exact bounds that differ only in tuple element names are not conflicting;
+				// their names are merged instead (kept where both agree, dropped otherwise).
+				IType merged = MergeSimilarTypes(ExactBound, type);
+				if (merged != null)
+					ExactBound = merged;
+				else
 					MultipleDifferentExactBounds = true;
 			}
 
@@ -318,7 +329,7 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 
 		bool PhaseTwo()
 		{
-			// C# 4.0 spec: §7.5.2.2 The second phase
+			// C# spec (draft-v11): §12.6.3.3 The second phase
 			Log.WriteLine("Phase Two");
 			// All unfixed type variables Xi which do not depend on any Xj are fixed.
 			List<TP> typeParametersToFix = new List<TP>();
@@ -373,30 +384,30 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 			}
 			else
 			{
-				// Otherwise, for all arguments ei with corresponding parameter type Ti
+				// Otherwise, for all arguments ei with corresponding parameter type Ti
 				for (int i = 0; i < arguments.Length; i++)
 				{
 					ResolveResult Ei = arguments[i];
 					IType Ti = parameterTypes[i];
-					// where the output types (§7.4.2.4) contain unfixed type variables Xj
-					// but the input types (§7.4.2.3) do not
+					// where the output types (§12.6.3.5) contain unfixed type variables Xj
+					// but the input types (§12.6.3.4) do not
 					if (OutputTypeContainsUnfixed(Ei, Ti) && !InputTypesContainsUnfixed(Ei, Ti))
 					{
-						// an output type inference (§7.4.2.6) is made for ei with type Ti.
+						// an output type inference (§12.6.3.8) is made for ei with type Ti.
 						Log.WriteLine("MakeOutputTypeInference for argument #" + i);
 						MakeOutputTypeInference(Ei, Ti);
 					}
 				}
-				// Then the second phase is repeated.
+				// Then the second phase is repeated.
 				return PhaseTwo();
 			}
 		}
 		#endregion
 
-		#region Input Types / Output Types (§7.5.2.3 + §7.5.2.4)
+		#region Input Types / Output Types (§12.6.3.4 + §12.6.3.5)
 		IType[] InputTypes(ResolveResult e, IType t)
 		{
-			// C# 4.0 spec: §7.5.2.3 Input types
+			// C# spec (draft-v11): §12.6.3.4 Input types
 			LambdaResolveResult lrr = e as LambdaResolveResult;
 			if (lrr != null && lrr.IsImplicitlyTyped || e is MethodGroupResolveResult)
 			{
@@ -416,7 +427,7 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 
 		IType[] OutputTypes(ResolveResult e, IType t)
 		{
-			// C# 4.0 spec: §7.5.2.4 Output types
+			// C# spec (draft-v11): §12.6.3.5 Output types
 			LambdaResolveResult lrr = e as LambdaResolveResult;
 			if (lrr != null || e is MethodGroupResolveResult)
 			{
@@ -465,8 +476,8 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 		}
 		#endregion
 
-		#region DependsOn (§7.5.2.5)
-		// C# 4.0 spec: §7.5.2.5 Dependance
+		#region DependsOn (§12.6.3.6)
+		// C# spec (draft-v11): §12.6.3.6 Dependence
 
 		void CalculateDependencyMatrix()
 		{
@@ -522,8 +533,8 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 		void MakeOutputTypeInference(ResolveResult e, IType t)
 		{
 			Log.WriteLine(" MakeOutputTypeInference from " + e + " to " + t);
-			// If E is an anonymous function with inferred return type  U (§7.5.2.12) and T is a delegate type or expression
-			// tree type with return type Tb, then a lower-bound inference (§7.5.2.9) is made from U to Tb.
+			// If E is an anonymous function with inferred return type  U (§12.6.3.14) and T is a delegate type or expression
+			// tree type with return type Tb, then a lower-bound inference (§12.6.3.11) is made from U to Tb.
 			LambdaResolveResult lrr = e as LambdaResolveResult;
 			if (lrr != null)
 			{
@@ -610,10 +621,10 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 		}
 		#endregion
 
-		#region MakeExplicitParameterTypeInference (§7.5.2.7)
+		#region MakeExplicitParameterTypeInference (§12.6.3.9)
 		void MakeExplicitParameterTypeInference(LambdaResolveResult e, IType t)
 		{
-			// C# 4.0 spec: §7.5.2.7 Explicit parameter type inferences
+			// C# spec (draft-v11): §12.6.3.9 Explicit parameter type inferences
 			if (e.IsImplicitlyTyped || !e.HasParameterList)
 				return;
 			Log.WriteLine(" MakeExplicitParameterTypeInference from " + e + " to " + t);
@@ -728,10 +739,10 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 		}
 		#endregion
 
-		#region MakeLowerBoundInference (§7.5.2.9)
+		#region MakeLowerBoundInference (§12.6.3.11)
 		/// <summary>
 		/// Make lower bound inference from U to V.
-		/// C# 4.0 spec: §7.5.2.9 Lower-bound inferences
+		/// C# spec (draft-v11): §12.6.3.11 Lower-bound inferences
 		/// </summary>
 		void MakeLowerBoundInference(IType U, IType V)
 		{
@@ -771,11 +782,13 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 				case (ArrayType arrU, ArrayType arrV) when arrU.Dimensions == arrV.Dimensions:
 					MakeLowerBoundInference(arrU.ElementType, arrV.ElementType);
 					return;
+				// Span<T> is invariant, so even in a lower-bound context a Span<V1> target
+				// contributes an exact element inference (C# 14 spec, 12.6.3.10).
 				case (ArrayType arrU, ParameterizedType spanV) when compilation.TypeSystemOptions.HasFlag(TypeSystemOptions.FirstClassSpanTypes) && spanV.IsKnownType(KnownTypeCode.SpanOfT):
-					MakeLowerBoundInference(arrU.ElementType, spanV.TypeArguments[0]);
+					MakeExactInference(arrU.ElementType, spanV.TypeArguments[0]);
 					return;
 				case (ParameterizedType spanU, ParameterizedType spanV) when compilation.TypeSystemOptions.HasFlag(TypeSystemOptions.FirstClassSpanTypes) && spanU.IsKnownType(KnownTypeCode.SpanOfT) && spanV.IsKnownType(KnownTypeCode.SpanOfT):
-					MakeLowerBoundInference(spanU.TypeArguments[0], spanV.TypeArguments[0]);
+					MakeExactInference(spanU.TypeArguments[0], spanV.TypeArguments[0]);
 					return;
 				case (ArrayType arrU, ParameterizedType rosV) when compilation.TypeSystemOptions.HasFlag(TypeSystemOptions.FirstClassSpanTypes) && rosV.IsKnownType(KnownTypeCode.ReadOnlySpanOfT):
 					MakeLowerBoundInference(arrU.ElementType, rosV.TypeArguments[0]);
@@ -961,15 +974,22 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 		}
 		#endregion
 
-		#region Fixing (§7.5.2.11)
+		#region Fixing (§12.6.3.13)
 		bool Fix(TP tp)
 		{
 			Log.WriteLine(" Trying to fix " + tp);
 			Debug.Assert(!tp.IsFixed);
 			if (tp.ExactBound != null)
 			{
-				// the exact bound will always be the result
-				tp.FixedTo = tp.ExactBound;
+				// Roslyn behavior (not in the C# standard): when a lower/upper bound has the
+				// same shape as the exact bound except for tuple element names, the names are
+				// merged - kept where both sides agree, dropped where they conflict. See
+				// MergeTupleNames in Roslyn's MethodTypeInference.cs.
+				IType fixedTo = tp.ExactBound;
+				foreach (var b in tp.LowerBounds.Concat(tp.UpperBounds))
+					fixedTo = MergeSimilarTypes(fixedTo, b) ?? fixedTo;
+				// the exact bound determines the result, up to the merged element names
+				tp.FixedTo = fixedTo;
 				// check validity
 				if (tp.MultipleDifferentExactBounds)
 					return false;
@@ -977,7 +997,11 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 					&& tp.UpperBounds.All(b => conversions.ImplicitConversion(tp.FixedTo, b).IsValid);
 			}
 			Log.Indent();
-			var types = CreateNestedInstance().FindTypesInBounds(tp.LowerBounds.ToArray(), tp.UpperBounds.ToArray());
+			// Same Roslyn-style merge, over lower and upper bounds together as Roslyn's Fix does,
+			// so bounds that differ only in tuple element names don't survive into
+			// FindTypesInBounds as distinct candidates.
+			var (lowerBounds, upperBounds) = MergeShapeEquivalentBounds(tp.LowerBounds, tp.UpperBounds);
+			var types = CreateNestedInstance().FindTypesInBounds(lowerBounds, upperBounds);
 			Log.Unindent();
 			if (algorithm == TypeInferenceAlgorithm.ImprovedReturnAllResults)
 			{
@@ -992,11 +1016,126 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 				return types.Count == 1;
 			}
 		}
+
+		/// <summary>
+		/// Merges similar types that differ only in tuple element names and/or object/dynamic, recursively.
+		///  * for tuple element names, a name is kept where both sides agree and dropped where they conflict.
+		///  * for object/dynamic, dynamic is preferred over object. 
+		/// Returns <c>null</c> if the types differ in any other aspects.
+		/// </summary>
+		static IType MergeSimilarTypes(IType a, IType b)
+		{
+			if (a.Equals(b))
+				return a;
+			// Roslyn merges differing nullability based on the variance of the position; this
+			// implementation does not track that, so differently annotated types are left alone.
+			if (a.Nullability != b.Nullability)
+				return null;
+			if (a is NullabilityAnnotatedType na && b is NullabilityAnnotatedType nb)
+			{
+				return MergeSimilarTypes(na.TypeWithoutAnnotation, nb.TypeWithoutAnnotation)
+					?.ChangeNullability(a.Nullability);
+			}
+			if (a.Kind == TypeKind.Dynamic && b.IsKnownType(KnownTypeCode.Object))
+			{
+				return a;
+			}
+			if (b.Kind == TypeKind.Dynamic && a.IsKnownType(KnownTypeCode.Object))
+			{
+				return b;
+			}
+			if (a is TupleType ta && b is TupleType tb
+				&& ta.ElementTypes.Length == tb.ElementTypes.Length)
+			{
+				var mergedElements = ImmutableArray.CreateBuilder<IType>(ta.ElementTypes.Length);
+				for (int i = 0; i < ta.ElementTypes.Length; i++)
+				{
+					var merged = MergeSimilarTypes(ta.ElementTypes[i], tb.ElementTypes[i]);
+					if (merged == null)
+						return null;
+					mergedElements.Add(merged);
+				}
+				var mergedNames = ImmutableArray.CreateBuilder<string>(ta.ElementNames.Length);
+				for (int i = 0; i < ta.ElementNames.Length; i++)
+				{
+					mergedNames.Add(ta.ElementNames[i] == tb.ElementNames[i] ? ta.ElementNames[i] : null);
+				}
+				return new TupleType(ta.Compilation, mergedElements.MoveToImmutable(), mergedNames.MoveToImmutable(),
+					ta.GetDefinition()?.ParentModule);
+			}
+			if (a is ParameterizedType pa && b is ParameterizedType pb
+				&& pa.GenericType.Equals(pb.GenericType)
+				&& pa.TypeArguments.Count == pb.TypeArguments.Count)
+			{
+				var mergedArgs = new IType[pa.TypeArguments.Count];
+				for (int i = 0; i < pa.TypeArguments.Count; i++)
+				{
+					var merged = MergeSimilarTypes(pa.TypeArguments[i], pb.TypeArguments[i]);
+					if (merged == null)
+						return null;
+					mergedArgs[i] = merged;
+				}
+				return new ParameterizedType(pa.GenericType, mergedArgs);
+			}
+			if (a is ArrayType arrA && b is ArrayType arrB && arrA.Dimensions == arrB.Dimensions)
+			{
+				var mergedElem = MergeSimilarTypes(arrA.ElementType, arrB.ElementType);
+				if (mergedElem == null)
+					return null;
+				return new ArrayType(arrA.Compilation, mergedElem, arrA.Dimensions, arrA.Nullability);
+			}
+			return null;
+		}
+
+		/// <summary>
+		/// Collapses bounds that are equal modulo tuple element names (possibly nested) into a
+		/// single merged type via <see cref="MergeSimilarTypes"/>, across both bound sets. Bounds
+		/// without a shape-equivalent partner are returned as-is.
+		/// </summary>
+		static (IReadOnlyList<IType> LowerBounds, IReadOnlyList<IType> UpperBounds) MergeShapeEquivalentBounds(
+			IReadOnlyCollection<IType> lowerBounds, IReadOnlyCollection<IType> upperBounds)
+		{
+			if (lowerBounds.Count + upperBounds.Count < 2)
+				return (lowerBounds.ToArray(), upperBounds.ToArray());
+			var mergedBounds = new List<IType>();
+			bool anyNamesMerged = false;
+			foreach (var bound in lowerBounds.Concat(upperBounds))
+			{
+				bool absorbed = false;
+				for (int i = 0; i < mergedBounds.Count && !absorbed; i++)
+				{
+					IType merged = MergeSimilarTypes(mergedBounds[i], bound);
+					if (merged != null)
+					{
+						// Bounds that are already equal merge to the existing entry itself;
+						// only a new type means element names were actually merged.
+						anyNamesMerged |= !ReferenceEquals(merged, mergedBounds[i]);
+						mergedBounds[i] = merged;
+						absorbed = true;
+					}
+				}
+				if (!absorbed)
+					mergedBounds.Add(bound);
+			}
+			if (!anyNamesMerged)
+				return (lowerBounds.ToArray(), upperBounds.ToArray());
+			return (MapToMergedBounds(lowerBounds, mergedBounds), MapToMergedBounds(upperBounds, mergedBounds));
+		}
+
+		/// <summary>
+		/// Replaces each bound with the entry of <paramref name="mergedBounds"/> it was merged into.
+		/// Merging only changes element names, never the shape, so every bound is still
+		/// shape-equivalent to exactly one of those entries.
+		/// </summary>
+		static IType[] MapToMergedBounds(IEnumerable<IType> bounds, List<IType> mergedBounds)
+		{
+			return bounds.Select(b => mergedBounds.First(m => MergeSimilarTypes(m, b) != null)).Distinct().ToArray();
+		}
 		#endregion
 
-		#region Finding the best common type of a set of expresssions
+		#region Finding the best common type of a set of expressions
 		/// <summary>
-		/// Gets the best common type (C# 4.0 spec: §7.5.2.14) of a set of expressions.
+		/// Gets the best common type (C# spec draft-v11: §12.6.3.17) of a set of expressions.
 		/// </summary>
 		public IType GetBestCommonType(IList<ResolveResult> expressions, out bool success)
 		{
@@ -1071,7 +1210,7 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 			Log.WriteCollection("FindTypesInBound, LowerBounds=", lowerBounds);
 			Log.WriteCollection("FindTypesInBound, UpperBounds=", upperBounds);
 
-			// First try the Fixing algorithm from the C# spec (§7.5.2.11)
+			// First try the Fixing algorithm from the C# spec (§12.6.3.13)
 			List<IType> candidateTypes = lowerBounds.Union(upperBounds)
 				.Where(c => lowerBounds.All(b => conversions.ImplicitConversion(b, c).IsValid))
 				.Where(c => upperBounds.All(b => conversions.ImplicitConversion(c, b).IsValid))
@@ -1079,9 +1218,8 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 
 			Log.WriteCollection("FindTypesInBound, Candidates=", candidateTypes);
 
-			// According to the C# specification, we need to pick the most specific
-			// of the candidate types. (the type which has conversions to all others)
-			// However, csc actually seems to choose the least specific.
+			// C# spec (draft-v11) §12.6.3.13: the result is the unique candidate type
+			// to which there is an implicit conversion from all the other candidate types.
 			candidateTypes = candidateTypes.Where(
 				c => candidateTypes.All(o => conversions.ImplicitConversion(o, c).IsValid)
 			).ToList();

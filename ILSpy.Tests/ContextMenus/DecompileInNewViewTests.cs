@@ -250,28 +250,34 @@ public class DecompileInNewViewTests
 			.OfType<ICSharpCode.ILSpy.Controls.TreeView.SharpTreeViewItem>()
 			.First(r => RowNodeEquals(r, node));
 
+		var menu = grid.ContextMenu!;
+
 		async Task RightClick(SharpTreeNode node)
 		{
 			var row = Row(node);
 			var clickX = System.Math.Min(row.Bounds.Width, grid.Bounds.Width) / 2;
 			var pt = row.TranslatePoint(new Point(clickX, row.Bounds.Height / 2), window);
+			// A popup's light-dismiss overlay keeps answering hit tests for as long as the frame
+			// that still shows it, and it swallows a press without raising ContextRequested - so
+			// nothing becomes the context target. Hit testing the point is the same question the
+			// context-request handler asks, so waiting for it to reach the row is exactly the
+			// precondition for this click, however many frames the overlay takes to disappear.
+			await Waiters.WaitForAsync(
+				() => window.InputHitTest(pt!.Value) is Visual hit
+					&& ReferenceEquals(hit.FindAncestorOfType<ICSharpCode.ILSpy.Controls.TreeView.SharpTreeViewItem>(includeSelf: true), row),
+				description: "the row to answer hit tests at the point about to be right-clicked");
 			HeadlessWindowExtensions.MouseDown(window, pt!.Value, MouseButton.Right);
 			HeadlessWindowExtensions.MouseUp(window, pt.Value, MouseButton.Right);
-			for (int i = 0; i < 4; i++)
-			{
-				Dispatcher.UIThread.RunJobs();
-				await Task.Delay(20);
-			}
+			// The highlight is scoped to the popup - set while the menu is being requested, dropped
+			// again when it closes - so the popup is the point at which the gesture is finished and
+			// the row's classes are worth reading.
+			await Waiters.WaitForAsync(() => menu.IsOpen, description: "the right-clicked row's context menu to open");
 		}
 
 		async Task Dismiss()
 		{
 			window.KeyPress(Key.Escape, RawInputModifiers.None, PhysicalKey.Escape, keySymbol: null);
-			for (int i = 0; i < 4; i++)
-			{
-				Dispatcher.UIThread.RunJobs();
-				await Task.Delay(20);
-			}
+			await Waiters.WaitForAsync(() => !menu.IsOpen, description: "the context menu to close");
 		}
 
 		await RightClick(nodeB);

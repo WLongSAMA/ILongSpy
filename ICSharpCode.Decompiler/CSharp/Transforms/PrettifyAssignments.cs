@@ -63,20 +63,26 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				if (CanConvertToCompoundAssignment(assignment.Left) && assignment.Left.IsMatch(binary.Left)
 					&& binary.Right != null && IsImplicitlyConvertible(binary.Right, expectedType))
 				{
-					assignment.Operator = GetAssignmentOperatorForBinaryOperator(binary.Operator);
-					if (assignment.Operator != AssignmentOperatorType.Assign)
+					var newOperator = GetAssignmentOperatorForBinaryOperator(binary.Operator);
+					if (newOperator != AssignmentOperatorType.Assign)
 					{
+						context.Step("Convert assignment to compound assignment", assignment);
+						assignment.Operator = newOperator;
 						// If we found a shorter operator, get rid of the BinaryOperatorExpression:
 						assignment.CopyAnnotationsFrom(binary);
 						assignment.Right = binary.Right;
 					}
 				}
 			}
-			if (context.Settings.IntroduceIncrementAndDecrement && assignment.Operator == AssignmentOperatorType.Add || assignment.Operator == AssignmentOperatorType.Subtract)
+			if (context.Settings.IntroduceIncrementAndDecrement && assignment.Operator is AssignmentOperatorType.Add or AssignmentOperatorType.Subtract)
 			{
-				// detect increment/decrement
+				// detect increment/decrement; ++/-- on float/double compiles to the same IL as
+				// adding/subtracting a constant 1 (which both types represent exactly), so a
+				// constant 1 right-hand side qualifies there just like for integers
 				var rr = assignment.Right.GetResolveResult();
-				if (rr.IsCompileTimeConstant && rr.Type.IsCSharpPrimitiveIntegerType() && CSharpPrimitiveCast.Cast(rr.Type.GetTypeCode(), 1, false).Equals(rr.ConstantValue))
+				if (rr.IsCompileTimeConstant
+					&& (rr.Type.IsCSharpPrimitiveIntegerType() || rr.Type.IsKnownType(KnownTypeCode.Single) || rr.Type.IsKnownType(KnownTypeCode.Double))
+					&& CSharpPrimitiveCast.Cast(rr.Type.GetTypeCode(), 1, false).Equals(rr.ConstantValue))
 				{
 					// only if it's not a custom operator
 					if (assignment.Annotation<IL.CallInstruction>() == null && assignment.Annotation<IL.UserDefinedCompoundAssign>() == null && assignment.Annotation<IL.DynamicCompoundAssign>() == null)
@@ -88,7 +94,10 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 							type = (assignment.Operator == AssignmentOperatorType.Add) ? UnaryOperatorType.PostIncrement : UnaryOperatorType.PostDecrement;
 						else
 							type = (assignment.Operator == AssignmentOperatorType.Add) ? UnaryOperatorType.Increment : UnaryOperatorType.Decrement;
-						assignment.ReplaceWith(new UnaryOperatorExpression(type, assignment.Left.Detach()).CopyAnnotationsFrom(assignment));
+						context.Step(type is UnaryOperatorType.Increment or UnaryOperatorType.PostIncrement ? "Convert assignment to increment" : "Convert assignment to decrement", assignment);
+						var unaryOperator = new UnaryOperatorExpression(type, assignment.Left.Detach()).CopyAnnotationsFrom(assignment);
+						assignment.ReplaceWith(unaryOperator);
+						context.EndStep(unaryOperator);
 					}
 				}
 			}

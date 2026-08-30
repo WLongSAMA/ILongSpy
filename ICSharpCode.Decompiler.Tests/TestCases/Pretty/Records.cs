@@ -1,6 +1,7 @@
 using System;
 #if CS100
 using System.Runtime.InteropServices;
+using System.Text;
 #endif
 
 namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
@@ -247,6 +248,8 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 #if CS100
 	internal class RecordStructs
 	{
+		public readonly record struct ReadonlyPoint(int X, int Y);
+
 		public record struct Base(string A);
 
 		public record CopyCtor(string A)
@@ -281,6 +284,10 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		}
 
 		public record struct PairWithPrimaryCtor<A, B>(A First, B Second);
+
+		public readonly record struct BoundsInfo(int Profile, Bounds Bounds);
+
+		public readonly record struct Bounds(ulong Small, ulong Large);
 
 		public record struct PrimaryCtor(int A, string B);
 
@@ -442,6 +449,39 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 				: this(42, B)
 			{
 				C = 1.41;
+			}
+		}
+
+		private static BoundsInfo GetInfo()
+		{
+			return new BoundsInfo(1, new Bounds(2uL, 3uL));
+		}
+
+		public static void NestedDeconstruction()
+		{
+			var (value, (value2, value3)) = GetInfo();
+			Console.WriteLine(value);
+			Console.WriteLine(value2);
+			Console.WriteLine(value3);
+		}
+	}
+
+	internal class RecordsWithCustomSynthesizedMembers
+	{
+		public record WithCustomToString(int A)
+		{
+			public sealed override string ToString()
+			{
+				return "custom";
+			}
+		}
+
+		public record WithCustomPrintMembers(int A)
+		{
+			protected virtual bool PrintMembers(StringBuilder builder)
+			{
+				builder.Append("X");
+				return true;
 			}
 		}
 	}

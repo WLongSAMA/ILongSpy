@@ -31,6 +31,7 @@ using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.Decompiler.TypeSystem.Implementation;
 using ICSharpCode.Decompiler.Util;
 using ICSharpCode.ILSpyX.FileLoaders;
+using ICSharpCode.ILSpyX.Instrumentation;
 using ICSharpCode.ILSpyX.PdbProvider;
 
 #nullable enable
@@ -137,13 +138,27 @@ namespace ICSharpCode.ILSpyX
 		string? targetFrameworkId;
 
 		/// <summary>
-		/// Returns a target framework identifier in the form '&lt;framework&gt;Version=v&lt;version&gt;'.
-		/// Returns an empty string if no TargetFrameworkAttribute was found
-		/// or the file doesn't contain an assembly header, i.e., is only a module.
-		/// 
-		/// Throws an exception if the file does not contain any .NET metadata (e.g. file of unknown format).
+		/// Returns the effective target framework identifier in the form '&lt;framework&gt;,Version=v&lt;version&gt;'.
+		/// An explicit override wins over the detected value.
 		/// </summary>
 		public async Task<string> GetTargetFrameworkIdAsync()
+		{
+			// An explicit override wins over (and bypasses) detection, even once detection has
+			// already cached a value, so the user's framework hint drives reference resolution.
+			// The setter normalizes blank to null, so a non-null override is always a usable TFM.
+			if (TargetFrameworkIdOverride is { } tfmOverride)
+				return tfmOverride;
+			return await GetDetectedTargetFrameworkIdAsync().ConfigureAwait(false);
+		}
+
+		/// <summary>
+		/// Returns the detected target framework identifier in the form '&lt;framework&gt;,Version=v&lt;version&gt;'.
+		/// Returns an empty string if no TargetFrameworkAttribute was found
+		/// or the file doesn't contain an assembly header, i.e., is only a module.
+		///
+		/// Throws an exception if the file does not contain any .NET metadata (e.g. file of unknown format).
+		/// </summary>
+		public async Task<string> GetDetectedTargetFrameworkIdAsync()
 		{
 			var value = LazyInit.VolatileRead(ref targetFrameworkId);
 			if (value == null)
@@ -373,7 +388,44 @@ namespace ICSharpCode.ILSpyX
 		/// </summary>
 		public string? PdbFileName { get; private set; }
 
+		string? targetFrameworkIdOverride;
+
+		/// <summary>
+		/// Overrides the target framework used to resolve this assembly's references, in the
+		/// '&lt;framework&gt;,Version=v&lt;version&gt;' form (e.g. ".NETFramework,Version=v4.8").
+		/// Null means the framework detected from the TargetFrameworkAttribute is used. Blank or
+		/// whitespace-only values (e.g. a hand-edited assembly-list XML with <c>TargetFramework=""</c>)
+		/// are normalized to null and incidental whitespace is trimmed, so an override never
+		/// suppresses detection with an empty effective TFM.
+		/// Set this before the assembly's references are first resolved (initial load) or follow
+		/// a change with a reload: the resolver is built once per LoadedAssembly and frozen.
+		/// </summary>
+		public string? TargetFrameworkIdOverride {
+			get => targetFrameworkIdOverride;
+			set {
+				var trimmed = value?.Trim();
+				targetFrameworkIdOverride = string.IsNullOrEmpty(trimmed) ? null : trimmed;
+			}
+		}
+
 		async Task<LoadResult> LoadAsync(Task<Stream?>? streamTask)
+		{
+			ILSpyXEventSource.Log.AssemblyLoadStart(fileName);
+			string loaderName = "";
+			bool success = false;
+			try
+			{
+				var result = await LoadCoreAsync(streamTask, name => loaderName = name).ConfigureAwait(false);
+				success = result.MetadataFile != null || result.Package != null;
+				return result;
+			}
+			finally
+			{
+				ILSpyXEventSource.Log.AssemblyLoadStop(fileName, loaderName, success);
+			}
+		}
+
+		async Task<LoadResult> LoadCoreAsync(Task<Stream?>? streamTask, Action<string> reportLoaderName)
 		{
 			using var stream = await PrepareStream();
 			FileLoadContext settings = new FileLoadContext(applyWinRTProjections, ParentBundle);
@@ -399,6 +451,7 @@ namespace ICSharpCode.ILSpyX
 							result = nextResult;
 							if (result.IsSuccess)
 							{
+								reportLoaderName(loader.GetType().Name);
 								break;
 							}
 						}
@@ -416,6 +469,8 @@ namespace ICSharpCode.ILSpyX
 				try
 				{
 					result = await PEFileLoader.LoadPEFile(fileName, stream, settings).ConfigureAwait(false);
+					if (result.IsSuccess)
+						reportLoaderName(nameof(PEFileLoader));
 				}
 				catch (Exception ex)
 				{
@@ -470,6 +525,25 @@ namespace ICSharpCode.ILSpyX
 		}
 
 		IDebugInfoProvider? LoadDebugInfo(PEFile? module)
+		{
+			if (module == null || !useDebugSymbols)
+			{
+				return LoadDebugInfoCore(module);
+			}
+			ILSpyXEventSource.Log.DebugInfoLoadStart(fileName);
+			IDebugInfoProvider? provider = null;
+			try
+			{
+				provider = LoadDebugInfoCore(module);
+				return provider;
+			}
+			finally
+			{
+				ILSpyXEventSource.Log.DebugInfoLoadStop(fileName, provider?.GetType().Name ?? "none");
+			}
+		}
+
+		IDebugInfoProvider? LoadDebugInfoCore(PEFile? module)
 		{
 			if (module == null)
 			{
@@ -540,6 +614,22 @@ namespace ICSharpCode.ILSpyX
 				return ResolveAsync(reference).GetAwaiter().GetResult();
 			}
 
+			public async Task<MetadataFile?> ResolveAsync(IAssemblyReference reference)
+			{
+				ILSpyXEventSource.Log.AssemblyResolveStart(reference);
+				var outcome = AssemblyResolveOutcome.NotFound;
+				try
+				{
+					var (module, resolvedVia) = await ResolveCoreAsync(reference).ConfigureAwait(false);
+					outcome = resolvedVia;
+					return module;
+				}
+				finally
+				{
+					ILSpyXEventSource.Log.AssemblyResolveStop(reference, outcome);
+				}
+			}
+
 			/// <summary>
 			/// 0) if we're inside a package, look for filename.dll in parent directories
 			/// 1) try to find exact match by tfm + full asm name in loaded assemblies
@@ -552,7 +642,7 @@ namespace ICSharpCode.ILSpyX
 			/// 8) search C:\Windows\Microsoft.NET\Framework64\v4.0.30319
 			/// 9) try to find match by asm name (no tfm/version) in loaded assemblies
 			/// </summary>
-			public async Task<MetadataFile?> ResolveAsync(IAssemblyReference reference)
+			async Task<(MetadataFile? Module, AssemblyResolveOutcome Outcome)> ResolveCoreAsync(IAssemblyReference reference)
 			{
 				MetadataFile? module;
 				// 0) if we're inside a package, look for filename.dll in parent directories
@@ -560,7 +650,7 @@ namespace ICSharpCode.ILSpyX
 				{
 					module = await providedAssemblyResolver.ResolveAsync(reference).ConfigureAwait(false);
 					if (module != null)
-						return module;
+						return (module, AssemblyResolveOutcome.ProvidedByParentResolver);
 				}
 
 				string tfm = await tfmTask.ConfigureAwait(false);
@@ -570,7 +660,7 @@ namespace ICSharpCode.ILSpyX
 				if (module != null)
 				{
 					referenceLoadInfo.AddMessageOnce(reference.FullName, MessageKind.Info, "Success - Found in Assembly List");
-					return module;
+					return (module, AssemblyResolveOutcome.FoundInList);
 				}
 
 				string? file = parent.GetUniversalResolver(applyWinRTProjections).FindAssemblyFile(reference);
@@ -590,9 +680,10 @@ namespace ICSharpCode.ILSpyX
 					if (asm != null)
 					{
 						referenceLoadInfo.AddMessage(reference.FullName, MessageKind.Info, "Success - Loading from: " + file);
-						return await asm.GetMetadataFileOrNullAsync().ConfigureAwait(false);
+						module = await asm.GetMetadataFileOrNullAsync().ConfigureAwait(false);
+						return (module, module != null ? AssemblyResolveOutcome.LoadedFromDisk : AssemblyResolveOutcome.NotFound);
 					}
-					return null;
+					return (null, AssemblyResolveOutcome.NotFound);
 				}
 				else
 				{
@@ -601,12 +692,13 @@ namespace ICSharpCode.ILSpyX
 					if (module == null)
 					{
 						referenceLoadInfo.AddMessageOnce(reference.FullName, MessageKind.Error, "Could not find reference: " + reference.FullName);
+						return (null, AssemblyResolveOutcome.NotFound);
 					}
 					else
 					{
 						referenceLoadInfo.AddMessageOnce(reference.FullName, MessageKind.Info, "Success - Found in Assembly List with different TFM or version: " + module.FileName);
+						return (module, AssemblyResolveOutcome.SimilarNameMatch);
 					}
-					return module;
 				}
 			}
 

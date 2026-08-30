@@ -236,11 +236,27 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 					return false;
 				if (!(kind == Slots.Getter || kind == Slots.Setter))
 					return false;
-				bool isAutoProperty = accessor.Body is null
-					&& !accessor.Attributes.Any()
-					&& policy.AutoPropertyFormatting == PropertyFormatting.SingleLine;
-				return isAutoProperty;
+				if (accessor.Body is not null || accessor.Attributes.Any()
+					|| policy.AutoPropertyFormatting != PropertyFormatting.SingleLine)
+				{
+					return false;
+				}
+				// A bodiless accessor mixed into a multi-line property (the other accessor has
+				// a body, e.g. "get; set { ... }" with the field keyword) gets its own line;
+				// only single-line properties keep "get; set;" inline.
+				if (accessor.Parent is PropertyDeclaration pd)
+					return IsPrintedAsSingleLine(pd, policy.AutoPropertyFormatting);
+				return true;
 			}
+		}
+
+		internal static bool IsPrintedAsSingleLine(PropertyDeclaration propertyDeclaration, PropertyFormatting autoPropertyFormatting)
+		{
+			return autoPropertyFormatting == PropertyFormatting.SingleLine
+				&& (propertyDeclaration.Getter is null || propertyDeclaration.Getter.Body is null)
+				&& (propertyDeclaration.Setter is null || propertyDeclaration.Setter.Body is null)
+				&& (propertyDeclaration.Getter is null || !propertyDeclaration.Getter.Attributes.Any())
+				&& (propertyDeclaration.Setter is null || !propertyDeclaration.Setter.Attributes.Any());
 		}
 
 		/// <summary>
@@ -604,7 +620,11 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 		{
 			StartNode(arrayCreateExpression);
 			WriteKeyword(ArrayCreateExpression.NewKeyword);
-			arrayCreateExpression.Type?.AcceptVisitor(this);
+			if (arrayCreateExpression.Type != null)
+			{
+				Space();
+				arrayCreateExpression.Type.AcceptVisitor(this);
+			}
 			if (arrayCreateExpression.Arguments.Count > 0)
 			{
 				WriteCommaSeparatedListInBrackets(arrayCreateExpression.Arguments);
@@ -870,11 +890,14 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 			StartNode(defaultValueExpression);
 
 			WriteKeyword(DefaultValueExpression.DefaultKeyword);
-			LPar();
-			Space(policy.SpacesWithinTypeOfParentheses);
-			defaultValueExpression.Type.AcceptVisitor(this);
-			Space(policy.SpacesWithinTypeOfParentheses);
-			RPar();
+			if (defaultValueExpression.Type is not null)
+			{
+				LPar();
+				Space(policy.SpacesWithinTypeOfParentheses);
+				defaultValueExpression.Type.AcceptVisitor(this);
+				Space(policy.SpacesWithinTypeOfParentheses);
+				RPar();
+			}
 
 			EndNode(defaultValueExpression);
 		}
@@ -1094,6 +1117,7 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 		{
 			StartNode(objectCreateExpression);
 			WriteKeyword(ObjectCreateExpression.NewKeyword);
+			Space();
 			objectCreateExpression.Type.AcceptVisitor(this);
 			bool useParenthesis = objectCreateExpression.Arguments.Any() || objectCreateExpression.Initializer is null;
 			if (useParenthesis)
@@ -2279,6 +2303,12 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 				else
 				{
 					WriteKeyword("set");
+					if (accessor.IsInitOnly)
+					{
+						// The setter is init-only, but the output language version has no init accessor:
+						// mark the keyword, so that the difference is not lost silently.
+						writer.WriteComment(CommentType.MultiLine, "init");
+					}
 				}
 				style = policy.PropertySetBraceStyle;
 			}
@@ -2659,12 +2689,7 @@ namespace ICSharpCode.Decompiler.CSharp.OutputVisitor
 			WriteIdentifier(propertyDeclaration.NameToken);
 			if (propertyDeclaration.ExpressionBody is null)
 			{
-				bool isSingleLine =
-					(policy.AutoPropertyFormatting == PropertyFormatting.SingleLine)
-					&& (propertyDeclaration.Getter is null || propertyDeclaration.Getter.Body is null)
-					&& (propertyDeclaration.Setter is null || propertyDeclaration.Setter.Body is null)
-					&& (propertyDeclaration.Getter is null || !propertyDeclaration.Getter.Attributes.Any())
-					&& (propertyDeclaration.Setter is null || !propertyDeclaration.Setter.Attributes.Any());
+				bool isSingleLine = IsPrintedAsSingleLine(propertyDeclaration, policy.AutoPropertyFormatting);
 				OpenBrace(isSingleLine ? BraceStyle.EndOfLine : policy.PropertyBraceStyle, newLine: !isSingleLine);
 				if (isSingleLine)
 					Space();

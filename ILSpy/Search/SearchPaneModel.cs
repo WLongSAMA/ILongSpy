@@ -53,7 +53,7 @@ namespace ICSharpCode.ILSpy.Search
 	[Export]
 	[ExportToolPane(ContentId = PaneContentId, Alignment = ToolPaneAlignment.Top, Order = 0, IsVisibleByDefault = false)]
 	[Shared]
-	public partial class SearchPaneModel : ToolPaneModel
+	public sealed partial class SearchPaneModel : ToolPaneModel, IDisposable
 	{
 		public const string PaneContentId = "Search";
 
@@ -66,7 +66,7 @@ namespace ICSharpCode.ILSpy.Search
 			// Refresh search results when the active assembly list mutates. Skip the
 			// restart when ONLY auto-loaded (dependency) assemblies are added — those
 			// fire from navigating through results in a large assembly and would cause
-			// a tight feedback loop / flicker. Mirrors WPF's #3734 fix.
+			// a tight feedback loop / flicker (issue #3734).
 			Util.MessageBus<Util.CurrentAssemblyListChangedEventArgs>.Subscribers += OnAssemblyListChanged;
 		}
 
@@ -251,7 +251,7 @@ namespace ICSharpCode.ILSpy.Search
 				? SearchResult.ComparerByFitness
 				: SearchResult.ComparerByName;
 			var run = new RunningSearch(
-				assemblyList.GetAssemblies(),
+				assemblyList,
 				term,
 				SelectedSearchMode.Mode,
 				language,
@@ -263,6 +263,16 @@ namespace ICSharpCode.ILSpy.Search
 			currentSearch = run;
 			IsSearching = true;
 			run.Start();
+		}
+
+		// The composition container is the only owner and disposes this model with itself. A search
+		// still in flight at that point owns a dispatcher timer and keeps IsSearching (and with it the
+		// pane's indeterminate progress animation) on; both would otherwise outlive the container.
+		public void Dispose()
+		{
+			currentSearch?.Cancel();
+			currentSearch = null;
+			IsSearching = false;
 		}
 
 		void OnRunCompleted(RunningSearch sender)

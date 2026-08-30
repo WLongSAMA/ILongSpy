@@ -19,10 +19,12 @@
 #nullable enable
 
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 
 using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.CSharp.Syntax.PatternMatching;
+using ICSharpCode.Decompiler.Semantics;
 using ICSharpCode.Decompiler.Util;
 
 namespace ICSharpCode.Decompiler.CSharp.Transforms
@@ -32,11 +34,21 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 	/// </summary>
 	public class CombineQueryExpressions : IAstTransform
 	{
+		[AllowNull] TransformContext context;
+
 		public void Run(AstNode rootNode, TransformContext context)
 		{
 			if (!context.Settings.QueryExpressions)
 				return;
-			CombineQueries(rootNode, new Dictionary<string, object?>());
+			this.context = context;
+			try
+			{
+				CombineQueries(rootNode, new Dictionary<string, object?>());
+			}
+			finally
+			{
+				this.context = null;
+			}
 		}
 
 		static readonly InvocationExpression castPattern = new InvocationExpression {
@@ -68,10 +80,12 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					else
 					{
 						QueryContinuationClause continuation = new QueryContinuationClause();
+						context.Step("Introduce query continuation", fromClause);
 						continuation.PrecedingQuery = innerQuery.Detach();
 						continuation.Identifier = fromClause.Identifier;
 						continuation.CopyAnnotationsFrom(fromClause);
 						fromClause.ReplaceWith(continuation);
+						context.EndStep(continuation);
 					}
 				}
 				else
@@ -79,6 +93,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					Match m = castPattern.Match(fromClause.Expression);
 					if (m.Success)
 					{
+						context.Step("Move Cast type into from clause", fromClause);
 						fromClause.Type = m.Get<AstType>("targetType").Single().Detach();
 						fromClause.Expression = m.Get<Expression>("inExpr").Single().Detach();
 					}
@@ -117,6 +132,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			// from * in (from x in ... select new { members of anonymous type }) ...
 			// =>
 			// from x in ... { let x = ... } ...
+			context.Step("Remove transparent query identifier", fromClause);
 			fromClause.Remove();
 			selectClause.Remove();
 			// Move clauses from innerQuery to query
@@ -125,6 +141,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			{
 				query.Clauses.InsertAfter(insertionPos, insertionPos = clause.Detach());
 			}
+			context.EndStep(query.Clauses.First());
 
 			foreach (var expr in match.Get<Expression>("expr"))
 			{
@@ -176,7 +193,9 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				newIdent.RemoveAnnotations<Semantics.MemberResolveResult>(); // remove the reference to the property of the anonymous type
 				if (fromOrLetIdentifiers.TryGetValue(mre.MemberName, out var annotation) && annotation != null)
 					newIdent.AddAnnotation(annotation);
+				context.Step("Replace transparent query identifier reference", mre);
 				mre.ReplaceWith(newIdent);
+				context.EndStep(newIdent);
 				return;
 			}
 		}

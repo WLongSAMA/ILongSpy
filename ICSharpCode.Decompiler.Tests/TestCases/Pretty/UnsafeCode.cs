@@ -24,6 +24,14 @@ using System.Runtime.InteropServices;
 
 namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 {
+	[StructLayout(LayoutKind.Sequential, Size = 1)]
+	internal struct PointerConstructor
+	{
+		public unsafe PointerConstructor(void* pointer)
+		{
+		}
+	}
+
 	internal class SizeofTest
 	{
 		private struct StructWithStaticField
@@ -539,7 +547,11 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 		private unsafe void Issue990()
 		{
+#if CS71
+			Data data = default;
+#else
 			Data data = default(Data);
+#endif
 			Data* ptr = &data;
 			ConvertIntToFloat(ptr->Position.GetHashCode());
 		}
@@ -554,7 +566,11 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 		private static T Get<T>()
 		{
+#if CS71
+			return default;
+#else
 			return default(T);
+#endif
 		}
 
 		private unsafe static ResultStruct NestedFixedBlocks(byte[] array)
@@ -668,5 +684,24 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		{
 			UseArrayOfPointers(null);
 		}
+
+		public unsafe static int* PointerToPointer(int** pp)
+		{
+			*pp = null;
+			return pp[3] = *pp;
+		}
+
+		public unsafe static void FixedPointerToPointer(int*[] arr)
+		{
+			fixed (int** ptr = &arr[0])
+			{
+				*ptr = null;
+			}
+		}
+	}
+
+	internal static class UnsafeObjectCreation
+	{
+		private unsafe static readonly PointerConstructor pointerConstructor = new PointerConstructor(null);
 	}
 }

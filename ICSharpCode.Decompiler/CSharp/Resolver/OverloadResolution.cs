@@ -29,7 +29,7 @@ using ICSharpCode.Decompiler.Util;
 namespace ICSharpCode.Decompiler.CSharp.Resolver
 {
 	/// <summary>
-	/// C# overload resolution (C# 4.0 spec: §7.5).
+	/// C# overload resolution (C# spec draft-v11: §12.6.4).
 	/// </summary>
 	public class OverloadResolution
 	{
@@ -205,6 +205,13 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 		/// Gets/Sets whether a value argument can be passed to an `in` reference parameter.
 		/// </summary>
 		public bool AllowImplicitIn { get; set; } = true;
+
+		/// <summary>
+		/// Gets/Sets whether an extension method receiver may bind through an implicit span
+		/// conversion. True for invocations; false when resolving a method group conversion,
+		/// where C# 14 does not consider span conversions.
+		/// </summary>
+		public bool AllowSpanConversionOnExtensionReceiver { get; set; } = true;
 
 		/// <summary>
 		/// Gets/Sets whether ConversionResolveResults created by this OverloadResolution
@@ -390,8 +397,8 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 		#region MapCorrespondingParameters
 		void MapCorrespondingParameters(Candidate candidate)
 		{
-			// C# 4.0 spec: §7.5.1.1 Corresponding parameters
-			// Updated for C# 7.2 non-trailing named arguments
+			// C# spec (draft-v11): §12.6.2.2 Corresponding parameters
+			// (includes the non-trailing named arguments rule from C# 7.2)
 			candidate.ArgumentToParameterMap = new int[arguments.Length];
 			bool hasPositionalArgument = false;
 			// go backwards, so that hasPositionalArgument tells us whether there
@@ -711,8 +718,11 @@ namespace ICSharpCode.Decompiler.CSharp.Resolver
 				if (IsExtensionMethodInvocation && parameterIndex == 0)
 				{
 					// First parameter to extension method must be an identity, reference, boxing or span conversion
-					if (!(c == Conversion.IdentityConversion || c == Conversion.ImplicitReferenceConversion || c == Conversion.BoxingConversion || c == Conversion.ImplicitSpanConversion))
+					if (!(c == Conversion.IdentityConversion || c == Conversion.ImplicitReferenceConversion || c == Conversion.BoxingConversion
+						|| (c == Conversion.ImplicitSpanConversion && AllowSpanConversionOnExtensionReceiver)))
+					{
 						candidate.AddError(OverloadResolutionErrors.ArgumentTypeMismatch);
+					}
 				}
 				else
 				{

@@ -29,7 +29,6 @@ using Humanizer.Inflections;
 using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.CSharp.OutputVisitor;
 using ICSharpCode.Decompiler.CSharp.Transforms;
-using ICSharpCode.Decompiler.CSharp.TypeSystem;
 using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.Decompiler.TypeSystem.Implementation;
 using ICSharpCode.Decompiler.Util;
@@ -127,6 +126,14 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 						AddExistingName(reservedVariableNames, name);
 					}
 					this.currentLowerCaseTypeOrMemberNames = currentLowerCaseTypeOrMemberNames.ToImmutableHashSet();
+
+					if (context.Settings.FieldKeyword
+						&& function.Method?.AccessorOwner is IProperty { Parameters.Count: 0 })
+					{
+						// "field" is a keyword in C# 14 property accessors; a local of that name
+						// would shadow the backing field.
+						AddExistingName(reservedVariableNames, "field");
+					}
 
 					// handle implicit parameters of set or event accessors
 					if (function.Method != null && IsSetOrEventAccessor(function.Method) && function.Parameters.Count > 0)
@@ -233,6 +240,14 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 							AddExistingName(reservedVariableNames, name);
 							if (variables.TryGetValue(i, out var v))
 								variableMapping[v] = name;
+						}
+						else if (!IsValidName(name))
+						{
+							// Compiler-generated parameter names (e.g. "<p0>" on an anonymous method
+							// declared without a parameter list) are not valid C# identifiers. Skipping
+							// the reservation and the mapping leaves the parameter to AssignName, which
+							// generates a fresh name from the type for any name that fails IsValidName.
+							continue;
 						}
 						string nameWithoutNumber = SplitName(name, out int newIndex);
 						if (!parentScope.IsReservedVariableName(nameWithoutNumber, out _))
@@ -490,13 +505,21 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 
 		private static void AssignNameToLocalFunction(ILFunction function, VariableScope parentContext)
 		{
-			if (!LocalFunctionDecompiler.ParseLocalFunctionName(function.Name, out _, out var newName) || !IsValidName(newName))
-				newName = null;
 			string nameWithoutNumber;
 			int number;
-			if (!string.IsNullOrEmpty(newName))
+			string newName;
+			if (LocalFunctionDecompiler.ParseLocalFunctionName(function.Name, out _, out newName) && IsValidName(newName))
 			{
 				nameWithoutNumber = SplitName(newName, out number);
+			}
+			else if (IsValidName(function.Name))
+			{
+				// An obfuscated assembly carries an arbitrary name instead of
+				// "<caller>g__name|x_y". Take it verbatim: it has no synthetic suffix to
+				// split off, so its trailing digits belong to the name itself
+				// ("smethod_1", not "smethod_" numbered 1).
+				nameWithoutNumber = function.Name;
+				number = 1;
 			}
 			else
 			{
@@ -882,6 +905,12 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 
 			if (name.Length == 0)
 				return "obj";
+			if (!IsValidName(name))
+			{
+				// A name taken from metadata may be legal there but not in C#; VB, for one,
+				// separates the parts of its generated names with '$'.
+				return null;
+			}
 			string lowerCaseName = char.ToLower(name[0]) + name.Substring(1);
 			if (CSharp.OutputVisitor.CSharpOutputVisitor.IsKeyword(lowerCaseName))
 				return null;

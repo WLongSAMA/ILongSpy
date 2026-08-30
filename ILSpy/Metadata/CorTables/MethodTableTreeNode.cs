@@ -41,8 +41,14 @@ namespace ICSharpCode.ILSpy.Metadata.CorTables
 		protected override IReadOnlyList<MethodDefEntry> LoadTable()
 		{
 			var list = new List<MethodDefEntry>();
-			foreach (var row in metadataFile.Metadata.MethodDefinitions)
-				list.Add(new MethodDefEntry(metadataFile, row));
+			// ParamList comes from the raw row (GetMethodDefParamLists): the computed range
+			// (GetParameters) is empty for a parameterless method, but the stored value is the
+			// running list position (the next method's first Param row, or one past the Param
+			// table's end), never 0.
+			foreach (var (handle, paramList) in metadataFile.Metadata.GetMethodDefParamLists())
+			{
+				list.Add(new MethodDefEntry(metadataFile, handle, paramList));
+			}
 			return list;
 		}
 
@@ -94,20 +100,23 @@ namespace ICSharpCode.ILSpy.Metadata.CorTables
 			public string? SignatureTooltip => GenerateTooltip(ref signatureTooltip, metadataFile, handle);
 
 			[ColumnInfo("X8", Kind = ColumnKind.Token)]
-			public int ParamList => MetadataTokens.GetToken(methodDef.GetParameters().FirstOrDefault());
+			public int ParamList => 0x08000000 | paramList;
 
 			string? paramListTooltip;
 			public string? ParamListTooltip {
 				get {
 					var param = methodDef.GetParameters().FirstOrDefault();
 					if (param.IsNil)
-						return null;
+						return "(method has no Param rows; the stored value is the start of its empty parameter list: the next method's first Param row, or one past the end of the Param table)";
 					return GenerateTooltip(ref paramListTooltip, metadataFile, param);
 				}
 			}
 
-			public MethodDefEntry(MetadataFile metadataFile, MethodDefinitionHandle handle)
+			readonly int paramList;
+
+			public MethodDefEntry(MetadataFile metadataFile, MethodDefinitionHandle handle, int paramList)
 			{
+				this.paramList = paramList;
 				this.metadataFile = metadataFile;
 				this.handle = handle;
 				methodDef = metadataFile.Metadata.GetMethodDefinition(handle);

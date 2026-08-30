@@ -69,6 +69,7 @@ namespace ICSharpCode.ILSpy
 		public static readonly IImage Search = LoadSvg(nameof(Search));
 		public static readonly IImage Library = LoadSvg(nameof(Library));
 		public static readonly IImage NuGet = LoadPng(nameof(NuGet));
+		public static readonly IImage Process = LoadSvg(nameof(Process));
 		public static readonly IImage MetadataFile = LoadSvg(nameof(MetadataFile));
 		public static readonly IImage WebAssemblyFile = LoadSvg("WebAssembly");
 		public static readonly IImage ProgramDebugDatabase = LoadSvg(nameof(ProgramDebugDatabase));
@@ -85,6 +86,15 @@ namespace ICSharpCode.ILSpy
 		public static readonly IImage ShowPublicOnly = LoadSvg(nameof(ShowPublicOnly));
 		public static readonly IImage ShowPrivateInternal = LoadSvg(nameof(ShowPrivateInternal));
 		public static readonly IImage ShowAll = LoadSvg(nameof(ShowAll));
+
+		// Bookmarks (file names carry dots, so the dotted variants can't use nameof).
+		public static readonly IImage Bookmark = LoadSvg(nameof(Bookmark));
+		public static readonly IImage BookmarkDisable = LoadSvg("Bookmark.Disable");
+		public static readonly IImage BookmarkNext = LoadSvg("Bookmark.Next");
+		public static readonly IImage BookmarkPrevious = LoadSvg("Bookmark.Previous");
+		public static readonly IImage BookmarkNextInFile = LoadSvg("Bookmark.Next.File");
+		public static readonly IImage BookmarkPreviousInFile = LoadSvg("Bookmark.Previous.File");
+		public static readonly IImage BookmarkClear = LoadSvg("Bookmark.Clear");
 
 		// Type-relation tree nodes (Base Types / Derived Types).
 		public static readonly IImage SuperTypes = LoadSvg(nameof(SuperTypes));

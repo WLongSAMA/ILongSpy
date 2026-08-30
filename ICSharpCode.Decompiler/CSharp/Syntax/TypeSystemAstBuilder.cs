@@ -23,10 +23,10 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
+using System.Reflection.Metadata.Ecma335;
 using System.Runtime.CompilerServices;
 
 using ICSharpCode.Decompiler.CSharp.Resolver;
-using ICSharpCode.Decompiler.CSharp.TypeSystem;
 using ICSharpCode.Decompiler.Semantics;
 using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.Decompiler.TypeSystem.Implementation;
@@ -227,7 +227,7 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 
 		/// <summary>
 		/// Controls whether C# 9 "init;" accessors are supported.
-		/// If disabled, emits "set /*init*/;" instead.
+		/// If disabled, emits "set/*init*/;" instead.
 		/// </summary>
 		public bool SupportInitAccessors { get; set; }
 
@@ -820,7 +820,7 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 			return attr;
 		}
 
-		private IEnumerable<AttributeSection> ConvertAttributes(IEnumerable<IAttribute> attributes, string? target = null)
+		internal IEnumerable<AttributeSection> ConvertAttributes(IEnumerable<IAttribute> attributes, string? target = null)
 		{
 			if (SortAttributes)
 				attributes = attributes.OrderBy(a => a, new DelegateComparer<IAttribute>((a, b) => CompareAttribute(a!, b!)));
@@ -1245,47 +1245,60 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 			if (AddResolveResultAnnotations)
 				expression.AddAnnotation(new MemberResolveResult(new TypeResolveResult(constantType), field));
 
+			if (info.Negate)
+			{
+				expression = new UnaryOperatorExpression(UnaryOperatorType.Minus, expression);
+				if (AddResolveResultAnnotations)
+					expression.AddAnnotation(new ConstantResolveResult(constantType, constant));
+			}
+
 			return true;
 		}
 
-		static readonly Dictionary<object, (KnownTypeCode Type, string Member)> specialConstants = new Dictionary<object, (KnownTypeCode Type, string Member)>() {
+		// Negate wraps the member reference in a unary minus. The negative counterpart of most
+		// members is itself a member (-MaxValue is exactly MinValue, and both infinities have
+		// their own), so only Epsilon needs it. It cannot be derived from the sign of the
+		// constant: MinValue and NegativeInfinity are negative, but must not be negated.
+		static readonly Dictionary<object, (KnownTypeCode Type, string Member, bool Negate)> specialConstants = new Dictionary<object, (KnownTypeCode Type, string Member, bool Negate)>() {
 			// byte:
-			{ byte.MaxValue, (KnownTypeCode.Byte, "MaxValue") },
+			{ byte.MaxValue, (KnownTypeCode.Byte, "MaxValue", false) },
 			// sbyte:
-			{ sbyte.MinValue, (KnownTypeCode.SByte, "MinValue") },
-			{ sbyte.MaxValue, (KnownTypeCode.SByte, "MaxValue") },
+			{ sbyte.MinValue, (KnownTypeCode.SByte, "MinValue", false) },
+			{ sbyte.MaxValue, (KnownTypeCode.SByte, "MaxValue", false) },
 			// short:
-			{ short.MinValue, (KnownTypeCode.Int16, "MinValue") },
-			{ short.MaxValue, (KnownTypeCode.Int16, "MaxValue") },
+			{ short.MinValue, (KnownTypeCode.Int16, "MinValue", false) },
+			{ short.MaxValue, (KnownTypeCode.Int16, "MaxValue", false) },
 			// ushort:
-			{ ushort.MaxValue, (KnownTypeCode.UInt16, "MaxValue") },
+			{ ushort.MaxValue, (KnownTypeCode.UInt16, "MaxValue", false) },
 			// int:
-			{ int.MinValue, (KnownTypeCode.Int32, "MinValue") },
-			{ int.MaxValue, (KnownTypeCode.Int32, "MaxValue") },
+			{ int.MinValue, (KnownTypeCode.Int32, "MinValue", false) },
+			{ int.MaxValue, (KnownTypeCode.Int32, "MaxValue", false) },
 			// uint:
-			{ uint.MaxValue, (KnownTypeCode.UInt32, "MaxValue") },
+			{ uint.MaxValue, (KnownTypeCode.UInt32, "MaxValue", false) },
 			// long:
-			{ long.MinValue, (KnownTypeCode.Int64, "MinValue") },
-			{ long.MaxValue, (KnownTypeCode.Int64, "MaxValue") },
+			{ long.MinValue, (KnownTypeCode.Int64, "MinValue", false) },
+			{ long.MaxValue, (KnownTypeCode.Int64, "MaxValue", false) },
 			// ulong:
-			{ ulong.MaxValue, (KnownTypeCode.UInt64, "MaxValue") },
+			{ ulong.MaxValue, (KnownTypeCode.UInt64, "MaxValue", false) },
 			// float:
-			{ float.NaN, (KnownTypeCode.Single, "NaN") },
-			{ float.NegativeInfinity, (KnownTypeCode.Single, "NegativeInfinity") },
-			{ float.PositiveInfinity, (KnownTypeCode.Single, "PositiveInfinity") },
-			{ float.MinValue, (KnownTypeCode.Single, "MinValue") },
-			{ float.MaxValue, (KnownTypeCode.Single, "MaxValue") },
-			{ float.Epsilon, (KnownTypeCode.Single, "Epsilon") },
+			{ float.NaN, (KnownTypeCode.Single, "NaN", false) },
+			{ float.NegativeInfinity, (KnownTypeCode.Single, "NegativeInfinity", false) },
+			{ float.PositiveInfinity, (KnownTypeCode.Single, "PositiveInfinity", false) },
+			{ float.MinValue, (KnownTypeCode.Single, "MinValue", false) },
+			{ float.MaxValue, (KnownTypeCode.Single, "MaxValue", false) },
+			{ float.Epsilon, (KnownTypeCode.Single, "Epsilon", false) },
+			{ -float.Epsilon, (KnownTypeCode.Single, "Epsilon", true) },
 			// double:
-			{ double.NaN, (KnownTypeCode.Double, "NaN") },
-			{ double.NegativeInfinity, (KnownTypeCode.Double, "NegativeInfinity") },
-			{ double.PositiveInfinity, (KnownTypeCode.Double, "PositiveInfinity") },
-			{ double.MinValue, (KnownTypeCode.Double, "MinValue") },
-			{ double.MaxValue, (KnownTypeCode.Double, "MaxValue") },
-			{ double.Epsilon, (KnownTypeCode.Double, "Epsilon") },
+			{ double.NaN, (KnownTypeCode.Double, "NaN", false) },
+			{ double.NegativeInfinity, (KnownTypeCode.Double, "NegativeInfinity", false) },
+			{ double.PositiveInfinity, (KnownTypeCode.Double, "PositiveInfinity", false) },
+			{ double.MinValue, (KnownTypeCode.Double, "MinValue", false) },
+			{ double.MaxValue, (KnownTypeCode.Double, "MaxValue", false) },
+			{ double.Epsilon, (KnownTypeCode.Double, "Epsilon", false) },
+			{ -double.Epsilon, (KnownTypeCode.Double, "Epsilon", true) },
 			// decimal:
-			{ decimal.MinValue, (KnownTypeCode.Decimal, "MinValue") },
-			{ decimal.MaxValue, (KnownTypeCode.Decimal, "MaxValue") },
+			{ decimal.MinValue, (KnownTypeCode.Decimal, "MinValue", false) },
+			{ decimal.MaxValue, (KnownTypeCode.Decimal, "MaxValue", false) },
 		};
 
 		bool IsFlagsEnum(ITypeDefinition type)
@@ -1293,26 +1306,47 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 			return type.HasAttribute(KnownAttribute.Flags);
 		}
 
-		Expression ConvertEnumValue(IType type, long val)
+		/// <summary>
+		/// Converts a numeric enum value into its enum member representation, if possible.
+		/// Uses a series of enum members concatenated by <c>|</c>, if necessary.
+		/// Returns <c>(EnumType)value</c> (or the plain numeric value, if <paramref name="declaringEnumMember"/> is set), if it fails.
+		/// <para>
+		/// If <paramref name="declaringEnumMember"/> is set to a non-<see langword="null"/> value,
+		/// unqualified references are used and self references are avoided. Also, casts to EnumType are dropped.
+		/// </para>
+		/// </summary>
+		internal Expression ConvertEnumValue(IType type, long val, IField? declaringEnumMember = null)
 		{
 			ITypeDefinition enumDefinition = type.GetDefinition()!;
 			TypeCode enumBaseTypeCode = ReflectionHelper.GetTypeCode(enumDefinition.EnumUnderlyingType);
+			bool isFlags = IsFlagsEnum(enumDefinition);
 			var fields = enumDefinition.Fields
 				.Select(PrepareConstant)
-				.Where(f => f.field != null)
+				.WhereNotNull()
 				.ToArray();
-			foreach (var (value, field) in fields)
+			int declaringTokenRowNumber = declaringEnumMember == null ? int.MaxValue : MetadataTokens.GetRowNumber(declaringEnumMember.MetadataToken);
+			foreach (var (value, field, weight) in fields)
 			{
-				if (value == val)
+				// In a [Flags] enum declaration, only reference single-bit members directly:
+				// combined values are built from their flag components below (so that
+				// e.g. All = Item1 | Item2 | Item3), and zero members stay numeric, because
+				// mask-style enums routinely contain several unrelated zero members
+				// (e.g. MethodAttributes.PrivateScope/ReuseSlot).
+				if (value == val && (declaringEnumMember == null || !isFlags || weight == 1))
 				{
-					var mre = new MemberReferenceExpression(new TypeReferenceExpression(ConvertType(type)), field.Name);
-					if (AddResolveResultAnnotations)
-						mre.AddAnnotation(new MemberResolveResult(mre.Target.GetResolveResult(), field));
-					return mre;
+					if (field == declaringEnumMember || (declaringTokenRowNumber < MetadataTokens.GetRowNumber(field.MetadataToken)))
+					{
+						return ConvertConstantValue(enumDefinition.EnumUnderlyingType!, CSharpPrimitiveCast.Cast(enumBaseTypeCode, val, false));
+					}
+					return MakeEnumMemberReference(field);
 				}
 			}
-			if (IsFlagsEnum(enumDefinition))
+			if (isFlags)
 			{
+				// The complement of a byte- or ushort-based enum member is computed in int and
+				// therefore negative, which an enum member initializer cannot implicitly convert
+				// back to the underlying type -- the ~X form would not compile there.
+				bool complementCompiles = declaringEnumMember == null || enumBaseTypeCode is not (TypeCode.Byte or TypeCode.UInt16);
 				long enumValue = val;
 				Expression? expr = null;
 				long negatedEnumValue = ~val;
@@ -1333,14 +1367,17 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 						break;
 				}
 				Expression? negatedExpr = null;
-				foreach (var (fieldValue, field) in fields.OrderByDescending(f => CalculateHammingWeight(unchecked((ulong)f.value))))
+				foreach (var (fieldValue, field, weight) in fields.OrderByDescending(f => f.weight))
 				{
-					if (fieldValue == 0)
+					if (fieldValue == 0 || field == declaringEnumMember)
 						continue;   // skip None enum value
+
+					if (declaringTokenRowNumber < MetadataTokens.GetRowNumber(field.MetadataToken))
+						continue;
 
 					if ((fieldValue & enumValue) == fieldValue)
 					{
-						var fieldExpression = new MemberReferenceExpression(new TypeReferenceExpression(ConvertType(type)), field.Name);
+						var fieldExpression = MakeEnumMemberReference(field);
 						if (expr == null)
 							expr = fieldExpression;
 						else
@@ -1348,9 +1385,9 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 
 						enumValue &= ~fieldValue;
 					}
-					if ((fieldValue & negatedEnumValue) == fieldValue)
+					if (complementCompiles && (fieldValue & negatedEnumValue) == fieldValue)
 					{
-						var fieldExpression = new MemberReferenceExpression(new TypeReferenceExpression(ConvertType(type)), field.Name);
+						var fieldExpression = MakeEnumMemberReference(field);
 						if (negatedExpr == null)
 							negatedExpr = fieldExpression;
 						else
@@ -1359,28 +1396,43 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 						negatedEnumValue &= ~fieldValue;
 					}
 				}
-				if (enumValue == 0 && expr != null)
+				// A multi-bit value that lies entirely within a larger, previously declared member
+				// is usually a field encoding inside that mask (e.g. TypeAttributes.NestedPrivate
+				// within VisibilityMask), not a union of independent flags; keep it numeric.
+				bool isEncodedInEarlierMask = declaringEnumMember != null && fields.Any(
+					f => f.field != declaringEnumMember
+						&& MetadataTokens.GetRowNumber(f.field.MetadataToken) < declaringTokenRowNumber
+						&& (f.value & val) == val && f.value != val);
+				if (enumValue == 0 && expr != null && !isEncodedInEarlierMask)
 				{
 					if (!(negatedEnumValue == 0 && negatedExpr != null && negatedExpr.Descendants.Count() < expr.Descendants.Count()))
 					{
 						return expr;
 					}
 				}
-				if (negatedEnumValue == 0 && negatedExpr != null)
+				if (complementCompiles && negatedEnumValue == 0 && negatedExpr != null)
 				{
 					return new UnaryOperatorExpression(UnaryOperatorType.BitNot, negatedExpr);
 				}
 			}
-			return new CastExpression(ConvertType(type), new PrimitiveExpression(CSharpPrimitiveCast.Cast(enumBaseTypeCode, val, false)));
 
-			(long value, IField field) PrepareConstant(IField field)
+			var numericExpression = ConvertConstantValue(enumDefinition.EnumUnderlyingType!, CSharpPrimitiveCast.Cast(enumBaseTypeCode, val, false));
+			if (declaringEnumMember != null)
+			{
+				return numericExpression;
+			}
+			return new CastExpression(ConvertType(type), numericExpression);
+
+			(long value, IField field, int weight)? PrepareConstant(IField field)
 			{
 				if (!field.IsConst)
-					return (-1, null!);
+					return null;
 				object? constantValue = field.GetConstantValue();
 				if (constantValue == null)
-					return (-1, null!);
-				return ((long)CSharpPrimitiveCast.Cast(TypeCode.Int64, constantValue, checkForOverflow: false), field);
+					return null;
+				var value = (long)CSharpPrimitiveCast.Cast(TypeCode.Int64, constantValue, checkForOverflow: false);
+				var weight = CalculateHammingWeight(unchecked((ulong)value));
+				return (value, field, weight);
 			}
 
 			// see https://en.wikipedia.org/wiki/Hamming_weight
@@ -1394,6 +1446,24 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 				x = (x & m2) + ((x >> 2) & m2); //put count of each 4 bits into those 4 bits 
 				x = (x + (x >> 4)) & m4;        //put count of each 8 bits into those 8 bits 
 				return unchecked((int)((x * h01) >> 56));  //returns left 8 bits of x + (x<<8) + (x<<16) + (x<<24) + ... 
+			}
+
+			Expression MakeEnumMemberReference(IField field)
+			{
+				if (declaringEnumMember == null)
+				{
+					var mre = new MemberReferenceExpression(new TypeReferenceExpression(ConvertType(type)), field.Name);
+					if (AddResolveResultAnnotations)
+						mre.AddAnnotation(new MemberResolveResult(mre.Target.GetResolveResult(), field));
+					return mre;
+				}
+				else
+				{
+					var ie = new IdentifierExpression(field.Name);
+					if (AddResolveResultAnnotations)
+						ie.AddAnnotation(new MemberResolveResult(null, field));
+					return ie;
+				}
 			}
 		}
 
@@ -1438,6 +1508,103 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		const int MAX_DENOMINATOR_DOUBLE = 1000;
 		const int MAX_DENOMINATOR_FLOAT = 360;
 
+		// Common machine-scale denominators: powers of two used for binary scaling,
+		// and 2^n-1 values used when normalizing integers (for example, byte colors / 255).
+		// Keep this as a targeted candidate set rather than increasing the generic denominator
+		// limit, which would reintroduce accidental fraction matches for ordinary floating-point values.
+		static readonly int[] preferredFractionDenominators = {
+			127, 128,
+			255, 256,
+			1023, 1024,
+			4095, 4096,
+			8192,
+			16384,
+			32767, 32768,
+			65535, 65536,
+			1048576
+		};
+
+		static int GetIntegerLiteralLength(long value)
+		{
+			int length = value < 0 ? 1 : 0;
+			do
+			{
+				length++;
+				value /= 10;
+			} while (value != 0);
+			return length;
+		}
+
+		static int GetFractionDisplayLength(long num, long den, bool isDouble)
+		{
+			// Float integer constants use the `f` suffix; double constants need `.0`.
+			int numericSuffixLength = isDouble ? 2 : 1;
+			return GetIntegerLiteralLength(num) + GetIntegerLiteralLength(den)
+				+ 3 + 2 * numericSuffixLength; // `num / den`
+		}
+
+		// Unit fractions and denominators composed only of 2, 3 and 5 are already
+		// conventional forms; do not expand them just to reach a preferred scale.
+		static bool IsSimpleFraction(long num, long den)
+		{
+			Debug.Assert(den > 0);
+			if (num == 1 || num == -1)
+				return true;
+			while (den % 2 == 0)
+				den /= 2;
+			while (den % 3 == 0)
+				den /= 3;
+			while (den % 5 == 0)
+				den /= 5;
+			return den == 1;
+		}
+
+		static int GetPreferredFractionScore(long num, int den, bool isDouble)
+		{
+			// Powers of two are native to binary floating point and therefore more likely to
+			// match by coincidence. Values of the form 2^n-1 are a stronger normalization
+			// signal, so allow them a slightly larger readability bonus.
+			bool isPowerOfTwo = (den & (den - 1)) == 0;
+			Debug.Assert(isPowerOfTwo || ((den + 1) & den) == 0);
+			int readabilityBonus = isPowerOfTwo ? 1 : 2;
+			return GetFractionDisplayLength(num, den, isDouble) - readabilityBonus;
+		}
+
+		static bool TryGetPreferredFraction(object constantValue, bool isDouble, out long num, out long den, out int score)
+		{
+			num = 0;
+			den = 0;
+			score = int.MaxValue;
+
+			double value = isDouble ? (double)constantValue : (float)constantValue;
+			if (!(Math.Abs(value) < 1.0))
+				return false;
+
+			foreach (int candidateDen in preferredFractionDenominators)
+			{
+				long candidateNum = (long)Math.Round(value * candidateDen);
+				if (candidateNum == 0 || candidateNum <= -candidateDen || candidateNum >= candidateDen)
+					continue;
+				if (!IsEqual(candidateNum, candidateDen, constantValue, isDouble))
+					continue;
+
+				int candidateScore = GetPreferredFractionScore(candidateNum, candidateDen, isDouble);
+				if (candidateScore < score || (candidateScore == score && candidateDen < den))
+				{
+					num = candidateNum;
+					den = candidateDen;
+					score = candidateScore;
+				}
+			}
+
+			return den != 0;
+		}
+
+		Expression MakeFraction(IType type, long num, long den)
+		{
+			return new BinaryOperatorExpression(MakeConstant(type, num), BinaryOperatorType.Divide, MakeConstant(type, den));
+		}
+
 		Expression ConvertFloatingPointLiteral(IType type, object constantValue)
 		{
 			// Coerce constantValue to either float or double:
@@ -1479,11 +1646,35 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 					? FractionApprox((double)constantValue, MAX_DENOMINATOR_DOUBLE)
 					: FractionApprox((float)constantValue, 200);
 
-				if (IsValidFraction(num, den) && IsEqual(num, den, constantValue, isDouble) && Math.Abs(den) != 1)
+				bool hasRegularFraction = IsValidFraction(num, den)
+					&& IsEqual(num, den, constantValue, isDouble)
+					&& Math.Abs(den) != 1;
+
+				if (TryGetPreferredFraction(constantValue, isDouble, out long preferredNum, out long preferredDen, out int preferredScore))
 				{
-					var left = MakeConstant(type, num);
-					var right = MakeConstant(type, den);
-					expr = new BinaryOperatorExpression(left, BinaryOperatorType.Divide, right);
+					int baselineLength = hasRegularFraction
+						? GetFractionDisplayLength(num, den, isDouble)
+						: str.Length + (isDouble ? 0 : 1);
+					// Do not replace an already-simple fraction (for example 21 / 32 or 2 / 15)
+					// just to reach one of the larger preferred scales.
+					bool regularFractionIsSimple = hasRegularFraction && IsSimpleFraction(num, den);
+					if (!regularFractionIsSimple && preferredScore <= baselineLength)
+					{
+						if (hasRegularFraction)
+						{
+							num = preferredNum;
+							den = preferredDen;
+						}
+						else
+						{
+							expr = MakeFraction(type, preferredNum, preferredDen);
+						}
+					}
+				}
+
+				if (hasRegularFraction)
+				{
+					expr = MakeFraction(type, num, den);
 				}
 			}
 
@@ -1666,7 +1857,10 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 		// we just keep the last partial product of these matrices.
 		static (long Num, long Den) FractionApprox(double value, int maxDenominator)
 		{
-			if (value > 0x7FFFFFFF)
+			// The range check has to be on the magnitude: the sign is stripped below, so a
+			// large negative value would otherwise reach the continued-fraction loop and
+			// overflow the terms it accumulates.
+			if (Math.Abs(value) > 0x7FFFFFFF)
 				return (0, 0);
 
 			double startValue = value;
@@ -1813,6 +2007,12 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 					return ConvertDestructor((IMethod)entity);
 				case SymbolKind.Accessor:
 					IMethod accessor = (IMethod)entity;
+					if (accessor.AccessorOwner is IProperty owner && owner.IsParameterizedProperty())
+					{
+						// C# cannot represent the parameterized property itself; its accessors
+						// are declared as ordinary methods.
+						return ConvertMethod(accessor);
+					}
 					Accessibility ownerAccessibility = accessor.AccessorOwner?.Accessibility ?? Accessibility.None;
 					return ConvertAccessor(accessor, accessor.AccessorKind, ownerAccessibility, false)!;
 				default:
@@ -1928,8 +2128,16 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 
 			if (this.ShowBaseTypes)
 			{
+				MemberLookup baseListLookup = new MemberLookup(typeDefinition.DeclaringTypeDefinition, typeDefinition.ParentModule);
 				foreach (IType baseType in typeDefinition.DirectBaseTypes)
 				{
+					// Interfaces enter the interface-impl metadata transitively, so entries the
+					// base list cannot name can be dropped; a base class was always written
+					// explicitly and stays even if C# could not name it.
+					if (baseType.Kind == TypeKind.Interface && !BaseTypeAccessibleFrom(baseType, typeDefinition, baseListLookup))
+					{
+						continue;
+					}
 					if (typeDefinition.Kind == TypeKind.Enum && baseType.IsKnownType(KnownTypeCode.Enum))
 					{
 						// if the declared type is an enum, replace all references to System.Enum with the enum-underlying type
@@ -1973,6 +2181,47 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 				}
 			}
 			return decl;
+		}
+
+		bool BaseTypeAccessibleFrom(IType baseType, ITypeDefinition currentType, MemberLookup lookup)
+		{
+			// Every type the base-list reference names must be nameable there, including
+			// type arguments ('class SubF : F, IWrap<F.IFoo>' fails like F.IFoo itself would).
+			var visitor = new BaseListNameabilityVisitor(currentType, lookup);
+			baseType.AcceptVisitor(visitor);
+			return visitor.AllNameable;
+		}
+
+		sealed class BaseListNameabilityVisitor(ITypeDefinition currentType, MemberLookup lookup) : TypeVisitor
+		{
+			public bool AllNameable = true;
+
+			public override IType VisitTypeDefinition(ITypeDefinition type)
+			{
+				AllNameable &= TypeDefinitionNameableInBaseList(type, currentType, lookup);
+				return base.VisitTypeDefinition(type);
+			}
+		}
+
+		static bool TypeDefinitionNameableInBaseList(ITypeDefinition? td, ITypeDefinition currentType, MemberLookup lookup)
+		{
+			if (td == null)
+				return true;
+			// A type may name its own nested types (and those of its enclosing types) in its
+			// base list regardless of accessibility, e.g. 'class F : F.IFoo'.
+			for (var t = currentType; t != null; t = t.DeclaringTypeDefinition)
+			{
+				if (td.DeclaringTypeDefinition?.Equals(t) == true)
+					return true;
+			}
+			// Everything else resolves in the enclosing scope: 'class SubF : F, F.IFoo' is
+			// CS0122 even though F.IFoo is accessible inside SubF's body. Protected access
+			// through the enclosing types' inheritance chains remains available, which
+			// MemberLookup grants for type definitions regardless of allowProtectedAccess.
+			if (!lookup.IsAccessible(td, false))
+				return false;
+			// Naming 'A.I' also requires 'A' to be nameable.
+			return TypeDefinitionNameableInBaseList(td.DeclaringTypeDefinition, currentType, lookup);
 		}
 
 		DelegateDeclaration ConvertDelegate(IMethod invokeMethod, Modifiers modifiers)
@@ -2118,10 +2367,7 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 				accessorKind = AccessorKind.Init;
 			}
 			decl.Kind = accessorKind;
-			if (accessor.IsInitOnly && accessorKind != AccessorKind.Init)
-			{
-				decl.AddTrailingTrivia(new Comment("init", CommentType.MultiLine));
-			}
+			decl.IsInitOnly = accessor.IsInitOnly;
 			if (AddResolveResultAnnotations)
 			{
 				decl.AddAnnotation(new MemberResolveResult(null, accessor));
@@ -2278,13 +2524,24 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 			if (method.IsExtensionMethod && method.ReducedFrom == null && decl.Parameters.Any())
 				decl.Parameters.First().HasThisModifier = true;
 
-			if (this.ShowTypeParameters && this.ShowTypeParameterConstraints && !method.IsOverride && !method.IsExplicitInterfaceImplementation)
+			if (this.ShowTypeParameters && this.ShowTypeParameterConstraints)
 			{
-				foreach (ITypeParameter tp in method.TypeParameters)
+				if (method.IsOverride || method.IsExplicitInterfaceImplementation)
 				{
-					var constraint = ConvertTypeParameterConstraint(tp);
-					if (constraint != null)
-						decl.Constraints.Add(constraint);
+					// C# inherits the constraints of an override or explicit interface
+					// implementation from the base member and forbids restating them, with a
+					// single exception: a 'class', 'struct', or 'default' constraint may be given
+					// to disambiguate whether 'T?' denotes a nullable annotation or Nullable<T>.
+					AddNullabilityDisambiguatingConstraints(decl, method);
+				}
+				else
+				{
+					foreach (ITypeParameter tp in method.TypeParameters)
+					{
+						var constraint = ConvertTypeParameterConstraint(tp);
+						if (constraint != null)
+							decl.Constraints.Add(constraint);
+					}
 				}
 			}
 			decl.Body = GenerateBodyBlock();
@@ -2544,6 +2801,68 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 			return c;
 		}
 
+		// A disambiguator is required only where the type parameter itself carries a nullable
+		// annotation ('T?') in the signature: without it the compiler reads 'T?' as Nullable<T>.
+		// The inherited constraints are re-emitted on the override's own type parameters in
+		// metadata, so which disambiguator is legal follows from them without resolving the base
+		// member. The restated disambiguator leaves no metadata trace of its own, hence it must be
+		// derived rather than read back.
+		// The clause is built here rather than through ConvertTypeParameterConstraint, which also
+		// prints 'allows ref struct' from the byreflike flag. That flag is re-emitted on the
+		// override's own type parameter as well, and restating it is CS0460.
+		void AddNullabilityDisambiguatingConstraints(MethodDeclaration decl, IMethod method)
+		{
+			if (method.TypeParameters.Count == 0)
+				return;
+			NullableTypeParameterCollector collector = new(method.TypeParameters);
+			method.ReturnType.AcceptVisitor(collector);
+			foreach (IParameter p in method.Parameters)
+				p.Type.AcceptVisitor(collector);
+			if (collector.NullableTypeParameters.Count == 0)
+				return;
+			foreach (ITypeParameter tp in method.TypeParameters)
+			{
+				if (!collector.NullableTypeParameters.Contains(tp) || GetNullabilityDisambiguator(tp) is not string keyword)
+					continue;
+				Constraint c = new();
+				c.TypeParameter = MakeSimpleType(tp.Name);
+				c.BaseTypes.Add(new PrimitiveType(keyword));
+				decl.Constraints.Add(c);
+			}
+		}
+
+		// Returns the constraint that keeps 'T?' meaning a nullable annotation on an override or
+		// explicit interface implementation, or null where the type parameter neither needs nor
+		// permits one.
+		static string? GetNullabilityDisambiguator(ITypeParameter tp) => tp.IsReferenceType switch {
+			// C# accepts only plain 'class' here, never 'class?'; the constraint's own nullability
+			// is inherited from the base member regardless.
+			true => "class",
+			// Constrained to neither a reference type nor a value type.
+			null => "default",
+			// A value type uses Nullable<T> rather than a nullable annotation.
+			false => null
+		};
+
+		// Collects the type parameters of one method that appear with a nullable annotation ('T?')
+		// anywhere in a visited type, including nested positions such as List<T?> or T?[]. Type
+		// parameters of any other owner are ignored: a specialized signature can substitute a
+		// foreign type parameter that happens to share an index with one of this method's own.
+		sealed class NullableTypeParameterCollector(IReadOnlyList<ITypeParameter> typeParameters) : TypeVisitor
+		{
+			public readonly HashSet<ITypeParameter> NullableTypeParameters = [];
+
+			public override IType VisitNullabilityAnnotatedType(NullabilityAnnotatedType type)
+			{
+				if (type is NullabilityAnnotatedTypeParameter { Nullability: Nullability.Nullable } natp
+					&& typeParameters.Contains(natp.OriginalTypeParameter))
+				{
+					NullableTypeParameters.Add(natp.OriginalTypeParameter);
+				}
+				return base.VisitNullabilityAnnotatedType(type);
+			}
+		}
+
 		static bool IsObjectOrValueType(IType type)
 		{
 			ITypeDefinition? d = type.GetDefinition();
@@ -2585,7 +2904,7 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 			{
 				var baseMember = member.ExplicitlyImplementedInterfaceMembers.FirstOrDefault();
 				if (baseMember != null)
-					return ConvertType(baseMember.DeclaringType);
+					return ConvertType(baseMember.DeclaringType.GetInterfaceAsImplementedBy(member.DeclaringType));
 			}
 			return null;
 		}

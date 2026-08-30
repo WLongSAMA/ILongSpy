@@ -51,6 +51,18 @@ namespace ICSharpCode.Decompiler.Tests
 			}
 		}
 
+		[Test]
+		public async Task ConditionalChain()
+		{
+			await Run();
+		}
+
+		[Test]
+		public async Task AnonymousMethodEdgeCases()
+		{
+			await Run();
+		}
+
 		[Test, Ignore("Need to decide how to represent virtual methods without 'newslot' flag")]
 		public async Task Issue379()
 		{
@@ -130,6 +142,12 @@ namespace ICSharpCode.Decompiler.Tests
 		}
 
 		[Test]
+		public async Task TruncatedAccessorBody()
+		{
+			await Run();
+		}
+
+		[Test]
 		public async Task EvalOrder()
 		{
 			await Run();
@@ -155,6 +173,12 @@ namespace ICSharpCode.Decompiler.Tests
 
 		[Test]
 		public async Task UnknownTypes()
+		{
+			await Run();
+		}
+
+		[Test]
+		public async Task NoAccessorProperties()
 		{
 			await Run();
 		}
@@ -197,6 +221,12 @@ namespace ICSharpCode.Decompiler.Tests
 
 		[Test]
 		public async Task Issue1454()
+		{
+			await Run();
+		}
+
+		[Test]
+		public async Task Issue1638()
 		{
 			await Run();
 		}
@@ -268,6 +298,24 @@ namespace ICSharpCode.Decompiler.Tests
 		}
 
 		[Test]
+		public async Task SwitchOnStringNegativeCharIndex()
+		{
+			await Run();
+		}
+
+		[Test]
+		public async Task CachedReadOnlySpanFromLazyCache()
+		{
+			await Run();
+		}
+
+		[Test]
+		public async Task SpanConversionOperatorMismatch()
+		{
+			await Run(settings: new DecompilerSettings { FileScopedNamespaces = false, FirstClassSpanTypes = true });
+		}
+
+		[Test]
 		public async Task ConstantBlobs()
 		{
 			await Run();
@@ -275,6 +323,12 @@ namespace ICSharpCode.Decompiler.Tests
 
 		[Test]
 		public async Task SequenceOfNestedIfs()
+		{
+			await Run();
+		}
+
+		[Test]
+		public async Task StackAllocDuplicateStore()
 		{
 			await Run();
 		}
@@ -287,6 +341,12 @@ namespace ICSharpCode.Decompiler.Tests
 
 		[Test]
 		public async Task CallIndirect()
+		{
+			await Run();
+		}
+
+		[Test]
+		public async Task InstanceOperatorCall()
 		{
 			await Run();
 		}
@@ -312,13 +372,31 @@ namespace ICSharpCode.Decompiler.Tests
 		}
 
 		[Test]
+		public async Task EnumArithmeticOutOfRange()
+		{
+			await Run();
+		}
+
+		[Test]
 		public async Task GuessAccessors()
 		{
 			await Run();
 		}
 
 		[Test]
+		public async Task InaccessibleParameterTypes()
+		{
+			await Run();
+		}
+
+		[Test]
 		public async Task EmptyBodies()
+		{
+			await Run();
+		}
+
+		[Test]
+		public async Task SealedRecordProtectedCopyCtor()
 		{
 			await Run();
 		}
@@ -349,6 +427,12 @@ namespace ICSharpCode.Decompiler.Tests
 		public async Task SortSwitchSections()
 		{
 			await Run(settings: new DecompilerSettings { SortSwitchSections = true, FileScopedNamespaces = false });
+		}
+
+		[Test]
+		public async Task Issue3729()
+		{
+			await Run();
 		}
 
 		async Task Run([CallerMemberName] string testName = null, DecompilerSettings settings = null,

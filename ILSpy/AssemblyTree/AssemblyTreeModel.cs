@@ -34,7 +34,6 @@ using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.Documentation;
 using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.TypeSystem;
-using ICSharpCode.Decompiler.TypeSystem.Implementation;
 using ICSharpCode.ILSpyX;
 using ICSharpCode.ILSpyX.TreeView;
 
@@ -153,14 +152,17 @@ namespace ICSharpCode.ILSpy.AssemblyTree
 			this.settingsService = settingsService;
 			this.languageService = languageService;
 			languageService.PropertyChanged += (_, e) => {
+				// The language version feeds the effective decompiler settings, and through those the
+				// type system the tree's nodes hold their entities from.
+				if (e.PropertyName is nameof(LanguageService.CurrentLanguage) or nameof(LanguageService.CurrentVersion))
+					RebuildIfTypeSystemOptionsChanged();
 				if (e.PropertyName == nameof(LanguageService.CurrentLanguage) && Root != null)
 					NotifyTextChanged(Root);
 			};
 			SelectedItems.CollectionChanged += OnSelectedItemsChanged;
 			// Single hub for "navigate to this reference, optionally highlighting that source"
-			// — mirrors WPF AssemblyTreeModel's JumpToReference subscription. The analyzer
-			// pane, metadata tables, and future decompile commands all push through this same
-			// channel.
+			// — the analyzer pane, metadata tables, and future decompile commands all push
+			// through this same channel.
 			Util.MessageBus<Util.NavigateToReferenceEventArgs>.Subscribers += OnNavigateToReference;
 			// Live re-render when Display Settings change. WPF leaves these as apply-on-next-
 			// load; Avalonia opts into reactivity because the Options dialog stays open while
@@ -252,8 +254,42 @@ namespace ICSharpCode.ILSpy.AssemblyTree
 				NotifyTextChanged(child);
 		}
 
+		// The type system each tree node resolved its entity from is keyed on the effective decompiler
+		// settings, and only one is cached per module: the moment those options change, the cached
+		// compilation is dropped and rebuilt, leaving every node holding an entity from a compilation
+		// that no longer exists. Rebuilding the loaded assembly nodes re-resolves them against the new
+		// one. Keyed on the options rather than the settings themselves because the Options page is
+		// live-apply -- most toggles (and every Display setting) leave the type system alone, and those
+		// must not cost a rebuild.
+		TypeSystemOptions? lastTypeSystemOptions;
+
+		void RebuildIfTypeSystemOptionsChanged()
+		{
+			if (Root == null)
+				return;
+			var options = DecompilerTypeSystem.GetOptions(settingsService.CreateEffectiveDecompilerSettings());
+			if (lastTypeSystemOptions == options)
+				return;
+			lastTypeSystemOptions = options;
+
+			// The rebuild replaces every node below an assembly, leaving the selection pointing at one
+			// that is no longer in the tree. Re-establish it from its path, the way Refresh does. That
+			// restores the expansion too: revealing the selected node expands its ancestors on the way
+			// to centring it.
+			var path = GetPathForNode(SelectedItem);
+			foreach (var assembly in Root.Children.OfType<TreeNodes.AssemblyTreeNode>())
+				assembly.ReloadChildren();
+			OnPropertyChanged(nameof(Root));
+			if (path is { Length: > 0 })
+				SelectNode(FindNodeByPath(path, returnBestMatch: true));
+		}
+
 		void OnSettingsChanged(object? sender, Util.SettingsChangedEventArgs e)
 		{
+			// A decompiler option can change the type system the tree's entities came from; the
+			// Display buckets below never do.
+			if (sender is Decompiler.DecompilerSettings or Options.DisplaySettings)
+				RebuildIfTypeSystemOptionsChanged();
 			if (sender is not Options.DisplaySettings)
 				return;
 			if (Root == null)
@@ -502,6 +538,10 @@ namespace ICSharpCode.ILSpy.AssemblyTree
 			using (AppEnv.AppLog.Phase("new AssemblyListTreeNode"))
 				assemblyListTreeNode = new AssemblyListTreeNode(list);
 			Root = assemblyListTreeNode;
+			// Baseline for RebuildIfTypeSystemOptionsChanged: whatever this tree's nodes will resolve
+			// their entities against. Recorded here rather than on the first settings change, so that a
+			// change arriving before any other has something to compare against.
+			lastTypeSystemOptions = DecompilerTypeSystem.GetOptions(settingsService.CreateEffectiveDecompilerSettings());
 			AppEnv.AppLog.Mark("Root assigned");
 			ScheduleBackgroundLoadSweep(list);
 		}
@@ -686,21 +726,30 @@ namespace ICSharpCode.ILSpy.AssemblyTree
 				? new List<LoadedAssembly>(newlyLoaded)
 				: AssemblyList?.GetAssemblies().ToList() ?? new List<LoadedAssembly>();
 
-			if (args.NavigateTo is { Length: > 0 } navigateTo)
-				await NavigateOnLaunchAsync(navigateTo, relevant);
-			else if (newlyLoaded.Count == 1 && FindAssemblyNode(newlyLoaded[0]) is { } singleNode)
+			// Only a target that actually resolved gets to own the selection. An ID naming
+			// nothing falls through to the same single-assembly selection that opening the
+			// file without --navigateto would have made, rather than leaving the tree empty
+			// with no indication of what went wrong.
+			bool navigationHandled = args.NavigateTo is { Length: > 0 } navigateTo
+				&& await NavigateOnLaunchAsync(navigateTo, relevant);
+			if (!navigationHandled && newlyLoaded.Count == 1 && FindAssemblyNode(newlyLoaded[0]) is { } singleNode)
 				SelectNode(singleNode);
 
 			// Search-pane wiring lands with task 6. Until then the arg parses but is a no-op
 			// rather than crashing.
 		}
 
-		async Task NavigateOnLaunchAsync(string navigateTo, IList<LoadedAssembly> relevant)
+		/// <summary>
+		/// Navigates to the given target. Returns false if it named nothing, leaving the
+		/// selection for the caller to fill in.
+		/// </summary>
+		async Task<bool> NavigateOnLaunchAsync(string navigateTo, IList<LoadedAssembly> relevant)
 		{
 			// "none" is a sentinel used by the WPF VS add-in to suppress initial navigation —
-			// the real target arrives later via IPC.
+			// the real target arrives later via IPC. Nothing else may claim the selection
+			// either, so this counts as handled.
 			if (navigateTo == "none")
-				return;
+				return true;
 
 			if (navigateTo.StartsWith("N:", StringComparison.Ordinal))
 			{
@@ -717,10 +766,10 @@ namespace ICSharpCode.ILSpy.AssemblyTree
 					if (nsNode != null)
 					{
 						SelectNode(nsNode);
-						return;
+						return true;
 					}
 				}
-				return;
+				return false;
 			}
 
 			// A gone or unreadable assembly resolves to null and is skipped by the entity search
@@ -728,74 +777,110 @@ namespace ICSharpCode.ILSpy.AssemblyTree
 			foreach (var asm in relevant)
 				await asm.GetMetadataFileOrNullAsync().ConfigureAwait(true);
 
-			var entity = await Task.Run(() => FindEntityInRelevantAssemblies(navigateTo, relevant));
-			if (entity != null)
+			var group = await Task.Run(() => FindEntitiesInRelevantAssemblies(navigateTo, relevant));
+			if (group.Count == 0)
+				return false;
+			// The short form of an overloaded member names the whole group, and no single
+			// overload answers it better than its siblings. Selecting all of them shows every
+			// one while staying at the member level, where the group is what the user was
+			// pointing at; picking one would hide that there was anything to pick.
+			var nodes = new List<SharpTreeNode>(group.Count);
+			foreach (var entity in group)
 			{
-				var node = FindTreeNode(entity);
-				if (node != null)
-					SelectNode(node);
+				if (FindTreeNode(entity) is { } found)
+					nodes.Add(found);
 			}
+			if (nodes.Count == 0)
+				return false;
+			SelectNodes(nodes);
+			return true;
 		}
 
 		internal static IEntity? FindEntityInRelevantAssemblies(string navigateTo, IEnumerable<LoadedAssembly> relevantAssemblies)
 		{
-			ITypeReference typeRef;
-			IMemberReference? memberRef = null;
-			if (navigateTo.StartsWith("T:", StringComparison.Ordinal))
-			{
-				typeRef = IdStringProvider.ParseTypeName(navigateTo);
-			}
-			else
-			{
-				memberRef = IdStringProvider.ParseMemberIdString(navigateTo);
-				typeRef = memberRef.DeclaringTypeReference;
-			}
-			foreach (var asm in relevantAssemblies)
-			{
-				var module = asm.GetMetadataFileOrNull();
-				if (module != null && CanResolveTypeInPEFile(module, typeRef, out var typeHandle))
-				{
-					ICompilation compilation = typeHandle.Kind == HandleKind.ExportedType
-						? new DecompilerTypeSystem(module, module.GetAssemblyResolver())
-						: new SimpleCompilation((PEFile)module, MinimalCorlib.Instance);
-					return memberRef == null
-						? typeRef.Resolve(new SimpleTypeResolveContext(compilation)) as ITypeDefinition
-						: memberRef.Resolve(new SimpleTypeResolveContext(compilation));
-				}
-			}
-			return null;
+			var group = FindEntitiesInRelevantAssemblies(navigateTo, relevantAssemblies);
+			return group.Count == 0 ? null : group[0];
 		}
 
-		static bool CanResolveTypeInPEFile(MetadataFile module, ITypeReference typeRef, out EntityHandle typeHandle)
+		/// <summary>
+		/// Resolves a navigation target to every entity it names. A member ID written without
+		/// its signature names an overload group; the caller decides how to present one.
+		/// </summary>
+		internal static IReadOnlyList<IEntity> FindEntitiesInRelevantAssemblies(string navigateTo, IEnumerable<LoadedAssembly> relevantAssemblies)
 		{
-			// Reference assemblies are skipped so the loop keeps looking for an actual definition.
-			if (module.IsReferenceAssembly())
+			// Reference assemblies are skipped so the search keeps looking for another
+			// assembly that might have a usable definition.
+			IReadOnlyList<MetadataFile> modules = [.. from asm in relevantAssemblies let mod = asm.GetMetadataFileOrNull() where mod != null && !mod.IsReferenceAssembly() select mod];
+			// The id came from a command line, so it is searched with the omission-tolerant
+			// ladder rather than resolved exactly: a parameter list or a generic arity that has
+			// to be spelled out is one the caller had to know before asking.
+			var (module, handles) = DocumentationIdSearch.Find(navigateTo, modules);
+			if (module == null || handles.IsEmpty)
 			{
-				typeHandle = default;
-				return false;
+				var (forwardedModule, handle) = FindMemberViaTypeForwarders(navigateTo, modules);
+				if (forwardedModule == null || handle.IsNil)
+					return [];
+				module = forwardedModule;
+				handles = [handle];
 			}
+			if (module.GetLoadedAssembly().GetTypeSystemOrNull()?.MainModule is not MetadataModule metadataModule)
+				return [];
+			var entities = new List<IEntity>(handles.Length);
+			foreach (var handle in handles)
+			{
+				if (metadataModule.ResolveEntity(handle) is { } entity)
+					entities.Add(entity);
+			}
+			return entities;
+		}
 
-			switch (typeRef)
+		/// <summary>
+		/// A member ID whose declaring type is present in the given modules only as a type
+		/// forwarder cannot be found by <see cref="IdStringProvider.FindEntity"/> alone:
+		/// the member rows live in the assembly the forwarder points to. Resolve that
+		/// assembly and search the member there.
+		/// </summary>
+		static (MetadataFile? Module, EntityHandle Handle) FindMemberViaTypeForwarders(string navigateTo, IReadOnlyList<MetadataFile> modules)
+		{
+			if (navigateTo.Length < 2 || navigateTo[1] != ':' || navigateTo.StartsWith("T:", StringComparison.Ordinal))
+				return default;
+			int parenPos = navigateTo.IndexOf('(');
+			if (parenPos < 0)
+				parenPos = navigateTo.LastIndexOf('~');
+			if (parenPos < 0)
+				parenPos = navigateTo.Length;
+			int dotPos = navigateTo.LastIndexOf('.', parenPos - 1);
+			if (dotPos <= 2)
+				return default;
+			string declaringTypeId = "T:" + navigateTo[2..dotPos];
+			// Forwarder chains are short; the bound only guards against cycles.
+			for (int depth = 0; depth < 16; depth++)
 			{
-				case GetPotentiallyNestedClassTypeReference topLevelType:
-					typeHandle = topLevelType.ResolveInPEFile(module);
-					return !typeHandle.IsNil;
-				case NestedTypeReference nestedType:
-					if (!CanResolveTypeInPEFile(module, nestedType.DeclaringTypeReference, out typeHandle))
-						return false;
-					if (typeHandle.Kind == HandleKind.ExportedType)
-						return true;
-					var typeDef = module.Metadata.GetTypeDefinition((TypeDefinitionHandle)typeHandle);
-					typeHandle = typeDef.GetNestedTypes().FirstOrDefault(t => {
-						var td = module.Metadata.GetTypeDefinition(t);
-						var typeName = ReflectionHelper.SplitTypeParameterCountFromReflectionName(module.Metadata.GetString(td.Name), out int typeParameterCount);
-						return nestedType.AdditionalTypeParameterCount == typeParameterCount && nestedType.Name == typeName;
-					});
-					return !typeHandle.IsNil;
-				default:
-					typeHandle = default;
-					return false;
+				var (module, typeHandle) = IdStringProvider.FindEntity(declaringTypeId, modules);
+				if (module == null || typeHandle.Kind != HandleKind.ExportedType)
+					return default;
+				var target = ResolveForwarderTarget(module, (ExportedTypeHandle)typeHandle);
+				if (target == null)
+					return default;
+				modules = [target];
+				var result = IdStringProvider.FindEntity(navigateTo, modules);
+				if (!result.Handle.IsNil)
+					return result;
 			}
+			return default;
+		}
+
+		static MetadataFile? ResolveForwarderTarget(MetadataFile module, ExportedTypeHandle handle)
+		{
+			var metadata = module.Metadata;
+			var implementation = metadata.GetExportedType(handle).Implementation;
+			// Nested forwarded types point at their enclosing forwarder entry.
+			while (implementation.Kind == HandleKind.ExportedType)
+				implementation = metadata.GetExportedType((ExportedTypeHandle)implementation).Implementation;
+			if (implementation.Kind != HandleKind.AssemblyReference)
+				return null;
+			var assemblyReference = new Decompiler.Metadata.AssemblyReference(module, (AssemblyReferenceHandle)implementation);
+			return module.GetAssemblyResolver().Resolve(assemblyReference);
 		}
 
 		void LoadAssemblies(IEnumerable<string> fileNames, List<LoadedAssembly>? loadedAssemblies = null, bool focusNode = true)
@@ -880,16 +965,14 @@ namespace ICSharpCode.ILSpy.AssemblyTree
 		/// Fan-out for changes to the currently-active assembly list (assemblies added or
 		/// removed). Re-publishes via <see cref="Util.MessageBus"/> so panes that don't
 		/// directly hold a reference to <see cref="AssemblyList"/> can react — the search
-		/// pane restarts, the dock workspace prunes orphaned tabs. Mirrors WPF's
-		/// <c>assemblyList_CollectionChanged</c> shape.
+		/// pane restarts, the dock workspace prunes orphaned tabs.
 		/// </summary>
 		void OnActiveAssemblyListCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
 		{
 			// Prune navigation-history entries that pointed at tree nodes inside removed
 			// assemblies BEFORE re-publishing — Back/Forward consumers (the toolbar
 			// commands + dropdowns) re-evaluate their CanExecute when the bus fires, so
-			// they must see the post-prune state. Mirrors WPF's history.RemoveAll(...)
-			// inside assemblyList_CollectionChanged.
+			// they must see the post-prune state.
 			if (e.OldItems is { Count: > 0 } oldItems)
 			{
 				var removed = new HashSet<LoadedAssembly>(oldItems.OfType<LoadedAssembly>());
@@ -950,8 +1033,7 @@ namespace ICSharpCode.ILSpy.AssemblyTree
 		/// <summary>
 		/// Resolves every assembly reference of each supplied assembly node through that
 		/// assembly's own resolver -- which auto-loads the targets into the live list -- then
-		/// re-decompiles the active tab so newly available references render. Mirrors WPF's
-		/// LoadDependencies command.
+		/// re-decompiles the active tab so newly available references render.
 		/// </summary>
 		public async Task LoadDependenciesAsync(IReadOnlyList<SharpTreeNode> nodes)
 		{
@@ -1006,7 +1088,7 @@ namespace ICSharpCode.ILSpy.AssemblyTree
 			// tree, so FindNodeByPath returns the same tree-node reference, the
 			// SelectedItem setter early-outs, and DockWorkspace.ShowSelectedNode's
 			// dedup short-circuits — leaving stale decompiled text. Force a fresh
-			// render. Mirrors WPF's RefreshDecompiledView() call.
+			// render.
 			AppEnv.AppComposition.TryGetExport<Docking.DockWorkspace>()?.ForceRefreshActiveTab();
 		}
 	}

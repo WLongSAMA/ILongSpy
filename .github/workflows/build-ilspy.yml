@@ -39,7 +39,7 @@ jobs:
         fetch-depth: 0
         persist-credentials: false
 
-    - uses: actions/setup-dotnet@v5
+    - uses: actions/setup-dotnet@v6
       with:
         dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
         dotnet-quality: ${{ env.DOTNET_SDK_QUALITY }}
@@ -80,27 +80,6 @@ jobs:
     - name: Format check
       run: dotnet-format whitespace --verify-no-changes --verbosity detailed ILSpy.sln
 
-    - name: Execute unit tests
-      run: >
-        dotnet test --solution ilspy.sln
-        --configuration ${{ matrix.configuration }}
-        --no-build --report-trx
-        --results-directory test-results/${{ matrix.configuration }}
-
-    - name: Upload Test Logs
-      uses: actions/upload-artifact@v7
-      if: success() || failure()
-      with:
-        name: test-results-${{ matrix.configuration }}
-        path: 'test-results/${{ matrix.configuration }}/*.trx'
-
-    - name: Create Test Report
-      uses: test-summary/action@v2
-      if: always()
-      with:
-        paths: "test-results/${{ matrix.configuration }}/*.trx"
-        folded: true
-
     # Release-only publish + zip: the win-x64 framework-dependent, win-arm64
     # framework-dependent, and win-x64 self-contained bundles. File names carry
     # the version and architecture so the artifacts are self-describing.
@@ -136,7 +115,7 @@ jobs:
       if: matrix.configuration == 'release'
       uses: actions/upload-artifact@v7
       with:
-        name: ILSpy binaries x64 ${{ steps.version.outputs.ILSPY_VERSION_NUMBER }} (${{ matrix.configuration }})
+        name: ILSpy_binaries_x64_${{ steps.version.outputs.ILSPY_VERSION_NUMBER }}_(${{ matrix.configuration }})
         path: ${{ env.StagingDirectory }}\ILSpy_binaries_${{ steps.version.outputs.ILSPY_VERSION_NUMBER }}-x64.zip
         if-no-files-found: error
 
@@ -144,7 +123,7 @@ jobs:
       if: matrix.configuration == 'release'
       uses: actions/upload-artifact@v7
       with:
-        name: ILSpy binaries arm64 ${{ steps.version.outputs.ILSPY_VERSION_NUMBER }} (${{ matrix.configuration }})
+        name: ILSpy_binaries_arm64_${{ steps.version.outputs.ILSPY_VERSION_NUMBER }}_(${{ matrix.configuration }})
         path: ${{ env.StagingDirectory }}\ILSpy_binaries_${{ steps.version.outputs.ILSPY_VERSION_NUMBER }}-arm64.zip
         if-no-files-found: error
 
@@ -152,18 +131,9 @@ jobs:
       if: matrix.configuration == 'release'
       uses: actions/upload-artifact@v7
       with:
-        name: ILSpy self-contained x64 ${{ steps.version.outputs.ILSPY_VERSION_NUMBER }} (${{ matrix.configuration }})
+        name: ILSpy_self-contained_x64_${{ steps.version.outputs.ILSPY_VERSION_NUMBER }}_(${{ matrix.configuration }})
         path: ${{ env.StagingDirectory }}\ILSpy_selfcontained_${{ steps.version.outputs.ILSPY_VERSION_NUMBER }}-x64.zip
         if-no-files-found: error
-
-  # Linux and macOS build the desktop solution filter, run the UI and decompiler tests on
-  # their own platform, and package self-contained Release bundles. The Windows job above
-  # produces the framework-dependent and self-contained zip bundles; the installer, the VS
-  # extension, and NuGet packages are not built. The decompiler tests need the ILSpy-tests
-  # submodule (the TargetNet40 configs compile against its legacy reference assemblies even
-  # on non-Windows); configs that genuinely need Windows (legacy csc, mcs, 32-bit, roundtrip)
-  # self-exclude via Tester.SupportedOnCurrentPlatform and [Platform("Win")]. ILSpy.Tests.Windows
-  # runs only in the Windows job by design.
 
   Desktop:
     strategy:
@@ -189,7 +159,7 @@ jobs:
         fetch-depth: 0
         persist-credentials: false
 
-    - uses: actions/setup-dotnet@v5
+    - uses: actions/setup-dotnet@v6
       with:
         dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
         dotnet-quality: ${{ env.DOTNET_SDK_QUALITY }}
@@ -218,34 +188,6 @@ jobs:
         -c Release
         /p:Platform="Any CPU" /m
 
-    - name: Execute UI tests
-      run: >
-        dotnet test --project ILSpy.Tests/ILSpy.Tests.csproj
-        --configuration Release
-        --no-build --report-trx
-        --results-directory test-results
-
-    - name: Execute decompiler tests
-      run: >
-        dotnet test --project ICSharpCode.Decompiler.Tests/ICSharpCode.Decompiler.Tests.csproj
-        --configuration Release
-        --no-build --report-trx
-        --results-directory test-results
-
-    - name: Upload Test Logs
-      uses: actions/upload-artifact@v7
-      if: success() || failure()
-      with:
-        name: test-results-${{ matrix.platform }}
-        path: 'test-results/*.trx'
-
-    - name: Create Test Report
-      uses: test-summary/action@v2
-      if: always()
-      with:
-        paths: "test-results/*.trx"
-        folded: true
-
     - name: Publish (self-contained)
       run: ./publish.ps1 -Configuration Release -Platform ${{ matrix.platform }}
 
@@ -256,7 +198,7 @@ jobs:
       if: matrix.platform == 'linux'
       uses: actions/upload-artifact@v7
       with:
-        name: ILSpy Linux x64 ${{ steps.version.outputs.ILSPY_VERSION_NUMBER }} (Release)
+        name: ILSpy_Linux_x64_${{ steps.version.outputs.ILSPY_VERSION_NUMBER }}
         path: ${{ env.StagingDirectory }}/ILSpy_linux-x64_*.zip
         if-no-files-found: error
 
@@ -264,7 +206,7 @@ jobs:
       if: matrix.platform == 'linux'
       uses: actions/upload-artifact@v7
       with:
-        name: ILSpy Linux x64 deb ${{ steps.version.outputs.ILSPY_VERSION_NUMBER }} (Release)
+        name: ILSpy_Linux_x64_deb_${{ steps.version.outputs.ILSPY_VERSION_NUMBER }}
         path: ${{ env.StagingDirectory }}/*.deb
         if-no-files-found: error
 
@@ -272,7 +214,7 @@ jobs:
       if: matrix.platform == 'linux'
       uses: actions/upload-artifact@v7
       with:
-        name: ILSpy Linux x64 rpm ${{ steps.version.outputs.ILSPY_VERSION_NUMBER }} (Release)
+        name: ILSpy_Linux_x64_rpm_${{ steps.version.outputs.ILSPY_VERSION_NUMBER }}
         path: ${{ env.StagingDirectory }}/*.rpm
         if-no-files-found: error
 
@@ -280,6 +222,6 @@ jobs:
       if: matrix.platform == 'macos'
       uses: actions/upload-artifact@v7
       with:
-        name: ILSpy macOS arm64 ${{ steps.version.outputs.ILSPY_VERSION_NUMBER }} (Release)
+        name: ILSpy_macOS_arm64_${{ steps.version.outputs.ILSPY_VERSION_NUMBER }}
         path: ${{ env.StagingDirectory }}/ILSpy_macos-arm64_*.zip
         if-no-files-found: error

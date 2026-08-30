@@ -32,6 +32,7 @@ using ICSharpCode.Decompiler.CSharp.OutputVisitor;
 using ICSharpCode.Decompiler.CSharp.ProjectDecompiler;
 using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.CSharp.Transforms;
+using ICSharpCode.Decompiler.DebugSteps;
 using ICSharpCode.Decompiler.IL;
 using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.Output;
@@ -111,18 +112,18 @@ namespace ICSharpCode.ILSpy.Languages
 
 		public override void WriteCommentLine(ITextOutput output, string comment) => output.WriteLine("// " + comment);
 
-		// Parity with WPF's CSharpLanguage: map an IL member back to its C# source via the
-		// decompiler, so compiler-generated members (lambdas, async/iterator state machines)
-		// resolve to their declaring method/part rather than only the declaring type (the
-		// base Language fallback). Used by analyzers / navigation.
+		// Maps an IL member back to its C# source via the decompiler, so compiler-generated
+		// members (lambdas, async/iterator state machines) resolve to their declaring
+		// method/part rather than only the declaring type (the base Language fallback).
+		// Used by analyzers / navigation.
 		public override CodeMappingInfo GetCodeMappingInfo(MetadataFile module, EntityHandle member)
 		{
 			return CSharpDecompiler.GetCodeMappingInfo(module, member);
 		}
 
-		// Parity with WPF's CSharpLanguage: produce C#-styled entity names (generics as
-		// <T>, nested types joined with '.'). Without this the base Language emits IL-style
-		// names (`1 arity suffixes, escaped identifiers).
+		// Produces C#-styled entity names (generics as <T>, nested types joined with '.').
+		// Without this the base Language emits IL-style names (`1 arity suffixes, escaped
+		// identifiers).
 		public override string GetEntityName(MetadataFile module, EntityHandle handle, bool fullName, bool omitGenerics)
 		{
 			MetadataReader metadata = module.Metadata;
@@ -287,6 +288,17 @@ namespace ICSharpCode.ILSpy.Languages
 			return new RichText(text, model);
 		}
 
+		public override RichText GetRichText(IType type)
+		{
+			ArgumentNullException.ThrowIfNull(type);
+			var output = new StringWriter();
+			var decoratedWriter = new TextWriterTokenWriter(output);
+			var writer = new CSharpHighlightingTokenWriter(TokenWriter.InsertRequiredSpaces(decoratedWriter), locatable: decoratedWriter);
+			var astBuilder = new TypeSystemAstBuilder { AlwaysUseShortTypeNames = true };
+			astBuilder.ConvertType(type).AcceptVisitor(new CSharpOutputVisitor(writer, FormattingOptionsFactory.CreateAllman()));
+			return new RichText(output.ToString(), writer.HighlightingModel);
+		}
+
 		static void EmboldenTypeNames(string text, RichTextModel model)
 		{
 			var highlighting = HighlightingManager.Instance.GetDefinition("C#");
@@ -313,11 +325,12 @@ namespace ICSharpCode.ILSpy.Languages
 				CancellationToken = options.CancellationToken,
 				DebugInfoProvider = module.GetDebugInfoOrNull(),
 			};
-			// The Debug Steps pane stops the AST pipeline at a chosen step by re-decompiling with
-			// options.StepLimit = number of AST transforms to keep; pop the rest from the end.
-			// StepLimit is int.MaxValue for a normal decompile, so nothing is removed.
-			while (decompiler.AstTransforms.Count > options.StepLimit)
-				decompiler.AstTransforms.RemoveAt(decompiler.AstTransforms.Count - 1);
+			decompiler.Stepper.StepLimit = options.StepLimit;
+			decompiler.Stepper.IsDebug = options.IsDebug;
+			// The Debug Steps pane walks the whole pipeline, so the IL transforms record into the same
+			// stepper as the C# AST transforms. Which runs record is decided by whoever started the
+			// decompile, not by the pane's state at the moment this runs on a background task.
+			decompiler.RecordSteps = options.RecordSteps;
 			if (options.EscapeInvalidIdentifiers)
 				decompiler.AstTransforms.Add(new EscapeInvalidIdentifiers());
 			return decompiler;
@@ -345,25 +358,25 @@ namespace ICSharpCode.ILSpy.Languages
 			{
 				var members = CollectFieldsAndCtors(methodDefinition.DeclaringTypeDefinition!, methodDefinition.IsStatic);
 				decompiler.AstTransforms.Add(new SelectCtorTransform(methodDefinition));
-				WriteCode(output, options.DecompilerSettings, decompiler.Decompile(members), decompiler.TypeSystem);
+				WriteCode(output, options, decompiler.Decompile(members), decompiler);
 			}
 			else
 			{
-				WriteCode(output, options.DecompilerSettings, decompiler.Decompile(method.MetadataToken), decompiler.TypeSystem);
+				WriteCode(output, options, decompiler.Decompile(method.MetadataToken), decompiler);
 			}
-			OnCSharpDecompiled(output, options);
+			OnCSharpDecompiled(decompiler, output, options);
 		}
 
 		// Implemented only under DEBUG (CSharpLanguage.DebugSteps.cs) to feed the Debug Steps pane;
 		// a no-op partial in Release.
-		partial void OnCSharpDecompiled(ITextOutput output, DecompilationOptions options);
+		partial void OnCSharpDecompiled(CSharpDecompiler decompiler, ITextOutput output, DecompilationOptions options);
 
 		public override void DecompileProperty(IProperty property, ITextOutput output, DecompilationOptions options)
 		{
 			CSharpDecompiler decompiler = BeginDecompile(property, output, options);
 			WriteCommentLine(output, TypeToString(property.DeclaringType));
-			WriteCode(output, options.DecompilerSettings, decompiler.Decompile(property.MetadataToken), decompiler.TypeSystem);
-			OnCSharpDecompiled(output, options);
+			WriteCode(output, options, decompiler.Decompile(property.MetadataToken), decompiler);
+			OnCSharpDecompiled(decompiler, output, options);
 		}
 
 		public override void DecompileField(IField field, ITextOutput output, DecompilationOptions options)
@@ -372,16 +385,16 @@ namespace ICSharpCode.ILSpy.Languages
 			WriteCommentLine(output, TypeToString(field.DeclaringType));
 			if (field.IsConst)
 			{
-				WriteCode(output, options.DecompilerSettings, decompiler.Decompile(field.MetadataToken), decompiler.TypeSystem);
+				WriteCode(output, options, decompiler.Decompile(field.MetadataToken), decompiler);
 			}
 			else
 			{
 				var members = CollectFieldsAndCtors(field.DeclaringTypeDefinition!, field.IsStatic);
 				var resolvedField = decompiler.TypeSystem.MainModule.GetDefinition((FieldDefinitionHandle)field.MetadataToken);
 				decompiler.AstTransforms.Add(new SelectFieldTransform(resolvedField));
-				WriteCode(output, options.DecompilerSettings, decompiler.Decompile(members), decompiler.TypeSystem);
+				WriteCode(output, options, decompiler.Decompile(members), decompiler);
 			}
-			OnCSharpDecompiled(output, options);
+			OnCSharpDecompiled(decompiler, output, options);
 		}
 
 		/// <summary>
@@ -408,24 +421,24 @@ namespace ICSharpCode.ILSpy.Languages
 			CSharpDecompiler decompiler = BeginDecompile(extension, output, options);
 			WriteCommentLine(output, TypeToString(commentType,
 				ConversionFlags.UseFullyQualifiedTypeNames | ConversionFlags.UseFullyQualifiedEntityNames | ConversionFlags.SupportExtensionDeclarations));
-			WriteCode(output, options.DecompilerSettings, decompiler.DecompileExtension(extension.MetadataToken), decompiler.TypeSystem);
-			OnCSharpDecompiled(output, options);
+			WriteCode(output, options, decompiler.DecompileExtension(extension.MetadataToken), decompiler);
+			OnCSharpDecompiled(decompiler, output, options);
 		}
 
 		public override void DecompileEvent(IEvent ev, ITextOutput output, DecompilationOptions options)
 		{
 			CSharpDecompiler decompiler = BeginDecompile(ev, output, options);
 			WriteCommentLine(output, TypeToString(ev.DeclaringType));
-			WriteCode(output, options.DecompilerSettings, decompiler.Decompile(ev.MetadataToken), decompiler.TypeSystem);
-			OnCSharpDecompiled(output, options);
+			WriteCode(output, options, decompiler.Decompile(ev.MetadataToken), decompiler);
+			OnCSharpDecompiled(decompiler, output, options);
 		}
 
 		public override void DecompileType(ITypeDefinition type, ITextOutput output, DecompilationOptions options)
 		{
 			CSharpDecompiler decompiler = BeginDecompile(type, output, options);
 			WriteCommentLine(output, TypeToString(type, ConversionFlags.UseFullyQualifiedTypeNames | ConversionFlags.UseFullyQualifiedEntityNames));
-			WriteCode(output, options.DecompilerSettings, decompiler.Decompile(type.MetadataToken), decompiler.TypeSystem);
-			OnCSharpDecompiled(output, options);
+			WriteCode(output, options, decompiler.Decompile(type.MetadataToken), decompiler);
+			OnCSharpDecompiled(decompiler, output, options);
 		}
 
 		public override ProjectId? DecompileAssembly(LoadedAssembly assembly, ITextOutput output, DecompilationOptions options)
@@ -511,7 +524,7 @@ namespace ICSharpCode.ILSpy.Languages
 			SyntaxTree st = options.FullDecompilation
 				? decompiler.DecompileWholeModuleAsSingleFile()
 				: decompiler.DecompileModuleAndAssemblyAttributes();
-			WriteCode(output, options.DecompilerSettings, st, decompiler.TypeSystem);
+			WriteCode(output, options, st, decompiler);
 			return null;
 		}
 
@@ -546,8 +559,22 @@ namespace ICSharpCode.ILSpy.Languages
 				targetDirectory,
 				WholeProjectDecompiler.CleanUpFileName(module.Name, ProjectFileExtension));
 			ProjectId? id;
-			using (var writer = new System.IO.StreamWriter(projectFileName))
-				id = decompiler.DecompileProject(module, targetDirectory, writer, options.CancellationToken);
+			try
+			{
+				using (var writer = new System.IO.StreamWriter(projectFileName))
+					id = decompiler.DecompileProject(module, targetDirectory, writer, options.CancellationToken);
+			}
+			finally
+			{
+				// The export does not abort on what it cannot decompile; hand the failures to the
+				// caller, whose result report - not this ITextOutput - is what the user sees when it
+				// finishes. Sources carrying error text are already on disk even if the export went
+				// on to fail, so this belongs in the finally.
+				foreach (var error in decompiler.Errors)
+				{
+					options.DecompilationErrors.Add(error);
+				}
+			}
 			output.WriteLine("// Project written to " + targetDirectory);
 			return id;
 		}
@@ -572,7 +599,7 @@ namespace ICSharpCode.ILSpy.Languages
 				DecompilerSettings settings,
 				IAssemblyResolver resolver,
 				IProjectFileWriter? projectWriter,
-				AssemblyReferenceClassifier? assemblyReferenceClassifier,
+				IAssemblyReferenceClassifier? assemblyReferenceClassifier,
 				ICSharpCode.Decompiler.DebugInfo.IDebugInfoProvider? debugInfoProvider)
 				: base(settings, resolver, projectWriter!, assemblyReferenceClassifier!, debugInfoProvider!)
 			{
@@ -709,15 +736,53 @@ namespace ICSharpCode.ILSpy.Languages
 			}
 		}
 
-		static void WriteCode(ITextOutput output, DecompilerSettings settings, SyntaxTree syntaxTree, IDecompilerTypeSystem typeSystem)
+		static void WriteCode(ITextOutput output, DecompilationOptions options, SyntaxTree syntaxTree, CSharpDecompiler decompiler)
 		{
-			syntaxTree.AcceptVisitor(new InsertParenthesesVisitor { InsertParenthesesForReadability = true });
-			output.IndentationString = settings.CSharpFormattingOptions.IndentationString;
-			TokenWriter tokenWriter = new TextTokenWriter(output, settings, typeSystem);
-			if (output is TextView.ISmartTextOutput smartOutput)
-				tokenWriter = new CSharpHighlightingTokenWriter(tokenWriter, smartOutput);
-			syntaxTree.AcceptVisitor(new CSharpOutputVisitor(tokenWriter, settings.CSharpFormattingOptions));
+			if (!TryWriteILAst(output, options, decompiler))
+			{
+				var settings = options.DecompilerSettings;
+				syntaxTree.AcceptVisitor(new InsertParenthesesVisitor { InsertParenthesesForReadability = true });
+				output.IndentationString = settings.CSharpFormattingOptions.IndentationString;
+				TokenWriter tokenWriter = new TextTokenWriter(output, settings);
+				// Node-range tracking (NodeLookup) is only consumed by the debug-step highlighter, which
+				// resolves nothing without a step limit. Skip it on a normal decompile so the common path
+				// doesn't pay the per-node/per-annotation bookkeeping; AvaloniaEditTextOutput is an
+				// ISmartTextOutput, so the branch below still gives it full syntax highlighting.
+				if (output is TextView.AvaloniaEditTextOutput avaloniaOutput && options.StepLimit != int.MaxValue)
+					tokenWriter = new CSharpHighlightingTokenWriter(tokenWriter, avaloniaOutput);
+				else if (output is TextView.ISmartTextOutput smartOutput)
+					tokenWriter = new CSharpHighlightingTokenWriter(tokenWriter, smartOutput);
+
+				// For the on-screen C# view, harvest the IL-offset/line map for body bookmarks during this
+				// single formatting pass (see Bookmarks.BookmarkDebugInfoCollector). The collector is the
+				// outermost writer so its StartNode sees each node's start line before any token is written.
+				// Other outputs (IL view, ilspycmd's plain text) are not AvaloniaEditTextOutput and are unaffected.
+				Bookmarks.BookmarkDebugInfoCollector? bookmarkCollector = null;
+				if (output is TextView.AvaloniaEditTextOutput bookmarkOutput)
+					tokenWriter = bookmarkCollector = new Bookmarks.BookmarkDebugInfoCollector(tokenWriter, bookmarkOutput);
+
+				syntaxTree.AcceptVisitor(new CSharpOutputVisitor(tokenWriter, settings.CSharpFormattingOptions));
+				bookmarkCollector?.Publish();
+			}
+			// Shared by both renderings: ILInstruction.WriteTo marks its node ranges the same way the
+			// C# token writer marks the AST's, so the highlighter resolves a step against whichever
+			// text was just written.
+			if (output is TextView.AvaloniaEditTextOutput nodeOutput
+				&& TextView.DebugStepHighlighter.TryResolve(decompiler.Stepper, options.StepLimit, options.HighlightStep, nodeOutput.NodeLookup, out var range))
+			{
+				nodeOutput.DebugStepHighlight = range;
+			}
 		}
+
+		// Writes the ILAst the pipeline was halted in, when a Debug Steps replay stopped it before
+		// there was any C# to show, and reports whether it wrote anything. Implemented under DEBUG in
+		// CSharpLanguage.DebugSteps.cs; in Release nothing sets a step limit, so it never writes.
+		private static partial bool TryWriteILAst(ITextOutput output, DecompilationOptions options, CSharpDecompiler decompiler);
+
+#if !DEBUG
+		private static partial bool TryWriteILAst(ITextOutput output, DecompilationOptions options, CSharpDecompiler decompiler)
+			=> false;
+#endif
 
 		void AddWarningMessage(MetadataFile module, ITextOutput output, string line1, string? line2 = null,
 			string? buttonText = null, global::Avalonia.Media.IImage? buttonImage = null,

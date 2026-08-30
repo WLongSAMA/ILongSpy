@@ -39,6 +39,12 @@ namespace ICSharpCode.ILSpy.Options
 		[ObservableProperty]
 		double selectedFontSize = 10.0 * 4 / 3;
 
+		/// <summary>Editor zoom (Ctrl+Wheel / the zoom overlay), as a multiplier on top of
+		/// <see cref="SelectedFontSize"/>. Kept separate so changing the font size in the
+		/// options dialog isn't mistaken for a zoom.</summary>
+		[ObservableProperty]
+		double editorZoomFactor = 1.0;
+
 		[ObservableProperty]
 		bool showLineNumbers;
 
@@ -56,6 +62,9 @@ namespace ICSharpCode.ILSpy.Options
 
 		[ObservableProperty]
 		bool foldBraces;
+
+		[ObservableProperty]
+		bool expandXmlDocumentationComments;
 
 		[ObservableProperty]
 		bool expandMemberDefinitions;
@@ -99,12 +108,16 @@ namespace ICSharpCode.ILSpy.Options
 		[ObservableProperty]
 		bool enableOmnibar;
 
+		[ObservableProperty]
+		bool highlightMemberReferences;
+
 		public XName SectionName => "DisplaySettings";
 
 		public void LoadFromXml(XElement section)
 		{
 			SelectedFont = (string?)section.Attribute("Font") ?? "Consolas";
 			SelectedFontSize = (double?)section.Attribute("FontSize") ?? 10.0 * 4 / 3;
+			EditorZoomFactor = (double?)section.Attribute(nameof(EditorZoomFactor)) ?? 1.0;
 			ShowLineNumbers = (bool?)section.Attribute(nameof(ShowLineNumbers)) ?? false;
 			ShowMetadataTokens = (bool?)section.Attribute(nameof(ShowMetadataTokens)) ?? false;
 			ShowMetadataTokensInBase10 = (bool?)section.Attribute(nameof(ShowMetadataTokensInBase10)) ?? false;
@@ -112,6 +125,7 @@ namespace ICSharpCode.ILSpy.Options
 			EnableWordWrap = (bool?)section.Attribute(nameof(EnableWordWrap)) ?? false;
 			SortResults = (bool?)section.Attribute(nameof(SortResults)) ?? true;
 			FoldBraces = (bool?)section.Attribute(nameof(FoldBraces)) ?? false;
+			ExpandXmlDocumentationComments = (bool?)section.Attribute(nameof(ExpandXmlDocumentationComments)) ?? false;
 			ExpandMemberDefinitions = (bool?)section.Attribute(nameof(ExpandMemberDefinitions)) ?? false;
 			ExpandUsingDeclarations = (bool?)section.Attribute(nameof(ExpandUsingDeclarations)) ?? false;
 			IndentationUseTabs = (bool?)section.Attribute(nameof(IndentationUseTabs)) ?? true;
@@ -125,6 +139,7 @@ namespace ICSharpCode.ILSpy.Options
 			StyleWindowTitleBar = (bool?)section.Attribute(nameof(StyleWindowTitleBar)) ?? false;
 			DecodeCustomAttributeBlobs = (bool?)section.Attribute(nameof(DecodeCustomAttributeBlobs)) ?? false;
 			EnableOmnibar = (bool?)section.Attribute(nameof(EnableOmnibar)) ?? false;
+			HighlightMemberReferences = (bool?)section.Attribute(nameof(HighlightMemberReferences)) ?? false;
 		}
 
 		public XElement SaveToXml()
@@ -132,6 +147,7 @@ namespace ICSharpCode.ILSpy.Options
 			var section = new XElement(SectionName);
 			section.SetAttributeValue("Font", SelectedFont);
 			section.SetAttributeValue("FontSize", SelectedFontSize);
+			section.SetAttributeValue(nameof(EditorZoomFactor), EditorZoomFactor);
 			section.SetAttributeValue(nameof(ShowLineNumbers), ShowLineNumbers);
 			section.SetAttributeValue(nameof(ShowMetadataTokens), ShowMetadataTokens);
 			section.SetAttributeValue(nameof(ShowMetadataTokensInBase10), ShowMetadataTokensInBase10);
@@ -139,6 +155,7 @@ namespace ICSharpCode.ILSpy.Options
 			section.SetAttributeValue(nameof(EnableWordWrap), EnableWordWrap);
 			section.SetAttributeValue(nameof(SortResults), SortResults);
 			section.SetAttributeValue(nameof(FoldBraces), FoldBraces);
+			section.SetAttributeValue(nameof(ExpandXmlDocumentationComments), ExpandXmlDocumentationComments);
 			section.SetAttributeValue(nameof(ExpandMemberDefinitions), ExpandMemberDefinitions);
 			section.SetAttributeValue(nameof(ExpandUsingDeclarations), ExpandUsingDeclarations);
 			section.SetAttributeValue(nameof(IndentationUseTabs), IndentationUseTabs);
@@ -152,6 +169,7 @@ namespace ICSharpCode.ILSpy.Options
 			section.SetAttributeValue(nameof(StyleWindowTitleBar), StyleWindowTitleBar);
 			section.SetAttributeValue(nameof(DecodeCustomAttributeBlobs), DecodeCustomAttributeBlobs);
 			section.SetAttributeValue(nameof(EnableOmnibar), EnableOmnibar);
+			section.SetAttributeValue(nameof(HighlightMemberReferences), HighlightMemberReferences);
 			return section;
 		}
 	}

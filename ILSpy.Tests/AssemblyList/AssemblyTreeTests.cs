@@ -1252,18 +1252,19 @@ public class AssemblyTreeTests
 		// tab opens with the supplied node decompiled, the existing tab keeps its content,
 		// and the assembly-tree selection is pulled across to the new tab's source node
 		// (the active tab and the tree are kept in lockstep).
-		var (window, vm) = await TestHarness.BootAsync(3);
+		var (window, vm) = await TestHarness.BootAsync();
+		var testAssembly = await vm.OpenAssemblyAsync(typeof(TabOpeningFixture).Assembly.Location);
 
 		var typeNode = vm.AssemblyTreeModel.FindNode<TypeTreeNode>(
-			"System.Linq", "System.Linq", "System.Linq.Enumerable");
+			testAssembly.ShortName, "ICSharpCode.ILSpy.Tests", "ICSharpCode.ILSpy.Tests.TabOpeningFixture");
 		typeNode.IsExpanded = true;
 		var pinned = typeNode.Children.OfType<MethodTreeNode>()
-			.Single(m => m.MethodDefinition.Name == "AsEnumerable");
+			.Single(m => m.MethodDefinition.Name == nameof(TabOpeningFixture.PinnedMethod));
 		var newTabTarget = typeNode.Children.OfType<MethodTreeNode>()
-			.First(m => m.MethodDefinition.Name == "Empty");
+			.Single(m => m.MethodDefinition.Name == nameof(TabOpeningFixture.NewTabMethod));
 		vm.AssemblyTreeModel.SelectNode(pinned);
 		var firstTab = await vm.DockWorkspace.WaitForDecompiledTextAsync();
-		TestCapture.Step("asenumerable-in-first-tab");
+		TestCapture.Step("fixture-pinned-method-in-first-tab");
 
 		await Waiters.WaitForAsync(() => window.GetVisualDescendants().OfType<AssemblyListPane>().Any());
 		var pane = await window.WaitForComponent<AssemblyListPane>();
@@ -1276,11 +1277,11 @@ public class AssemblyTreeTests
 		await Waiters.WaitForAsync(
 			() => (documents.VisibleDockables?.Count ?? 0) > initialCount);
 		var newTab = await vm.DockWorkspace.WaitForDecompiledTextAsync();
-		TestCapture.Step("empty-spawned-in-new-tab");
+		TestCapture.Step("fixture-new-tab-method-spawned-in-new-tab");
 		ReferenceEquals(newTab, firstTab).Should().BeFalse(
 			"a fresh decompiler tab must be created instead of reusing the existing one");
-		newTab.Text.Should().Contain("Empty");
-		firstTab.Text.Should().Contain("AsEnumerable");
+		newTab.Text.Should().Contain(nameof(TabOpeningFixture.NewTabMethod));
+		firstTab.Text.Should().Contain(nameof(TabOpeningFixture.PinnedMethod));
 		// Selection has moved to the new tab's source node — the active tab and the
 		// assembly-tree selection stay in lockstep.
 		ReferenceEquals(vm.AssemblyTreeModel.SelectedItem, newTabTarget).Should().BeTrue(
@@ -1539,6 +1540,35 @@ public class AssemblyTreeTests
 	}
 
 	[AvaloniaTest]
+	public async Task Derived_Type_Entries_Stay_Visible_When_The_DerivedTypes_Node_Is_Expanded()
+	{
+		// The filter cascade runs for children added under a visible parent. A derived-type
+		// entry must report FilterResult.Match there: the Recurse handling force-loads the
+		// entry's own (lazy) children and hides the entry when all of them are hidden -- a
+		// leaf derived type has none, so every entry under "Derived Types" ended up hidden.
+
+		var (_, vm) = await TestHarness.BootAsync(3);
+
+		var coreLibName = typeof(object).Assembly.GetName().Name!;
+		var typeNode = vm.AssemblyTreeModel.FindNode<TypeTreeNode>(
+			coreLibName, "System", "System.Exception");
+		// Expand the full ancestor chain so the type node is IsVisible -- the cascade only
+		// fires for children of visible parents, which is the state the real tree is in.
+		foreach (var ancestor in typeNode.Ancestors())
+			ancestor.IsExpanded = true;
+		typeNode.IsExpanded = true;
+
+		var derived = typeNode.Children.OfType<DerivedTypesTreeNode>().Single();
+		derived.IsExpanded = true;
+
+		var entries = derived.Children.OfType<DerivedTypesEntryNode>().ToList();
+		entries.Should().NotBeEmpty(
+			"the loaded assembly list contains several Exception subclasses");
+		entries.Should().OnlyContain(e => e.IsVisible,
+			"public derived-type entries must show under the expanded Derived Types node");
+	}
+
+	[AvaloniaTest]
 	public async Task Sealed_Class_Has_No_DerivedTypes_Node()
 	{
 		// Sealed types can't be derived from, so the DerivedTypes sub-tree must not appear.
@@ -1574,7 +1604,7 @@ public class AssemblyTreeTests
 	public void ExitCommand_Is_Exported_To_File_Menu_With_Resources_E_xit_Header()
 	{
 		// File → Exit must be MEF-discovered and parented to the File menu at MenuOrder=99999
-		// (last entry, mirrors WPF). Headless app lifetime isn't IClassicDesktopStyleApplicationLifetime,
+		// (last entry). Headless app lifetime isn't IClassicDesktopStyleApplicationLifetime,
 		// so Execute() is a safe no-op under tests — we don't actually shut down the test runner,
 		// but the metadata + CanExecute path is the regression-worthy surface.
 
@@ -1603,12 +1633,10 @@ public class AssemblyTreeTests
 	[AvaloniaTest]
 	public async Task Active_Search_Term_Does_Not_Hide_Member_Tree_Nodes()
 	{
-		// Pre-existing port misstep: commit 45461ddde wired the search-pane's term into
-		// LanguageSettings.SearchTerm and made SearchTermMatches gate visibility on it.
-		// WPF intentionally makes SearchTermMatches a no-op (returns true) so the assembly
-		// tree stays independent of the search pane. After fixing parity, FieldTreeNode.Filter
-		// must NOT return Hidden purely because the field's name doesn't contain the active
-		// SearchTerm — only ShowApiLevel + ShowMember remain valid hiding criteria.
+		// SearchTermMatches is deliberately a no-op (returns true) so the assembly tree stays
+		// independent of the search pane. FieldTreeNode.Filter must therefore NOT return
+		// Hidden purely because the field's name doesn't contain the active SearchTerm —
+		// only ShowApiLevel + ShowMember remain valid hiding criteria.
 
 		var (_, vm) = await TestHarness.BootAsync();
 
@@ -1808,5 +1836,18 @@ public class AssemblyTreeTests
 			"Load Dependencies must resolve referenced assemblies and keep them in the list");
 		added.Should().OnlyContain(a => a.IsAutoLoaded,
 			"freshly resolved dependencies are auto-loaded");
+	}
+}
+
+sealed class TabOpeningFixture
+{
+	public int PinnedMethod()
+	{
+		return 1;
+	}
+
+	public int NewTabMethod()
+	{
+		return 2;
 	}
 }

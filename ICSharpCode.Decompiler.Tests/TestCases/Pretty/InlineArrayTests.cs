@@ -99,6 +99,16 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			return array[GetIndex()] = (array[GetIndex() + 1] = value);
 		}
 
+		public int SumForeach(Byte16 b)
+		{
+			int num = 0;
+			foreach (byte b2 in b)
+			{
+				num += b2;
+			}
+			return num;
+		}
+
 		public void OverloadResolution()
 		{
 			Receiver(GetByte16());
@@ -115,12 +125,12 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 
 		public Byte16 GetByte16()
 		{
-			return default(Byte16);
+			return default;
 		}
 
 		public Generic16<T> GetGeneric<T>()
 		{
-			return default(Generic16<T>);
+			return default;
 		}
 
 		public int GetIndex()

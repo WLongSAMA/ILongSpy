@@ -208,13 +208,15 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 								TransformToLocalFunctionReference(info.Definition, newObj);
 								break;
 							case CallInstruction call:
-								TransformToLocalFunctionInvocation(info.Definition.ReducedMethod, call);
+								var callReplacement = TransformToLocalFunctionInvocation(info.Definition.ReducedMethod, call);
+								context.EndStep(callReplacement);
 								break;
 							case LdFtn fnptr:
 								var specializeMethod = info.Definition.ReducedMethod
 									.Specialize(fnptr.Method.Substitution);
 								var replacement = new LdFtn(specializeMethod).WithILRange(fnptr);
 								fnptr.ReplaceWith(replacement);
+								context.EndStep(replacement);
 								break;
 							default:
 								throw new NotSupportedException();
@@ -626,7 +628,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			useSite.Arguments[1].ReplaceWith(replacement);
 		}
 
-		void TransformToLocalFunctionInvocation(LocalFunctionMethod reducedMethod, CallInstruction useSite)
+		Call TransformToLocalFunctionInvocation(LocalFunctionMethod reducedMethod, CallInstruction useSite)
 		{
 			var specializeMethod = reducedMethod.Specialize(useSite.Method.Substitution);
 			bool wasInstanceCall = !useSite.Method.IsStatic;
@@ -656,6 +658,7 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 				replacement.AddILRange(useSite.Arguments[argumentCount - i - 1]);
 			}
 			useSite.ReplaceWith(replacement);
+			return replacement;
 		}
 
 		void DetermineCaptureAndDeclarationScope(LocalFunctionInfo info, ILInstruction useSite)
@@ -778,34 +781,44 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 			var method = metadata.GetMethodDefinition(methodHandle);
 			var declaringType = method.GetDeclaringType();
 
-			if ((method.Attributes & MethodAttributes.Assembly) == 0 || !(method.IsCompilerGenerated(metadata) || declaringType.IsCompilerGenerated(metadata)))
+			if ((method.Attributes & MethodAttributes.Assembly) == 0)
 				return false;
 
-			if (!ParseLocalFunctionName(metadata.GetString(method.Name), out _, out _))
-				return false;
+			if ((method.IsCompilerGenerated(metadata) || declaringType.IsCompilerGenerated(metadata))
+				&& ParseLocalFunctionName(metadata.GetString(method.Name), out _, out _))
+			{
+				return true;
+			}
 
-			return true;
+			// Obfuscators strip the CompilerGeneratedAttribute and rewrite the
+			// "<caller>g__name|x_y" name, but they cannot remove the by-ref display-struct
+			// parameter: a compiler-generated struct closure is only ever passed by reference
+			// to the local functions that capture it.
+			return HasDisplayStructParameter(module, methodHandle);
+		}
+
+		/// <summary>
+		/// True if any parameter is a by-ref compiler-generated closure struct of this module.
+		/// </summary>
+		static bool HasDisplayStructParameter(MetadataFile module, MethodDefinitionHandle methodHandle)
+		{
+			var metadata = module.Metadata;
+			var method = metadata.GetMethodDefinition(methodHandle);
+			FindRefStructParameters visitor = new FindRefStructParameters();
+			method.DecodeSignature(visitor, default);
+			foreach (var h in visitor.RefStructTypes)
+			{
+				var td = metadata.GetTypeDefinition(h);
+				if (td.IsCompilerGenerated(metadata) && td.IsValueType(metadata) && td.HasGeneratedName(metadata))
+					return true;
+			}
+			return false;
 		}
 
 		public static bool LocalFunctionNeedsAccessibilityChange(MetadataFile module, MethodDefinitionHandle methodHandle)
 		{
-			if (!IsLocalFunctionMethod(module, methodHandle))
-				return false;
-
-			var metadata = module.Metadata;
-			var method = metadata.GetMethodDefinition(methodHandle);
-
-			FindRefStructParameters visitor = new FindRefStructParameters();
-			method.DecodeSignature(visitor, default);
-
-			foreach (var h in visitor.RefStructTypes)
-			{
-				var td = metadata.GetTypeDefinition(h);
-				if (td.IsCompilerGenerated(metadata) && td.IsValueType(metadata))
-					return true;
-			}
-
-			return false;
+			return IsLocalFunctionMethod(module, methodHandle)
+				&& HasDisplayStructParameter(module, methodHandle);
 		}
 
 		public static bool IsLocalFunctionDisplayClass(MetadataFile module, TypeDefinitionHandle typeHandle, ILTransformContext context = null)
@@ -860,7 +873,10 @@ namespace ICSharpCode.Decompiler.IL.Transforms
 
 			public TypeDefinitionHandle GetArrayType(TypeDefinitionHandle elementType, ArrayShape shape) => default;
 			public TypeDefinitionHandle GetFunctionPointerType(MethodSignature<TypeDefinitionHandle> signature) => default;
-			public TypeDefinitionHandle GetGenericInstantiation(TypeDefinitionHandle genericType, ImmutableArray<TypeDefinitionHandle> typeArguments) => default;
+			// A closure struct of a generic method or generic declaring type arrives as an instantiation;
+			// its definition handle is what identifies the struct. Cross-module generic types still drop out,
+			// because GetTypeFromReference already returned nil for them.
+			public TypeDefinitionHandle GetGenericInstantiation(TypeDefinitionHandle genericType, ImmutableArray<TypeDefinitionHandle> typeArguments) => genericType;
 			public TypeDefinitionHandle GetGenericMethodParameter(Unit genericContext, int index) => default;
 			public TypeDefinitionHandle GetGenericTypeParameter(Unit genericContext, int index) => default;
 			public TypeDefinitionHandle GetModifiedType(TypeDefinitionHandle modifier, TypeDefinitionHandle unmodifiedType, bool isRequired) => default;

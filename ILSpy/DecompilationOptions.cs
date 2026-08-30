@@ -17,6 +17,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 using System;
+using System.Collections.Generic;
 using System.Threading;
 
 using ICSharpCode.Decompiler;
@@ -53,19 +54,37 @@ namespace ICSharpCode.ILSpy
 		public string? StrongNameKeyFile { get; set; }
 
 		/// <summary>
-		/// Stop the IL-transform pipeline after this many steps. <see cref="int.MaxValue"/>
-		/// means "run all transforms". The Debug Steps pane sets this to the index of a
-		/// chosen step so it can show the partial state at that point. Honoured by
-		/// <see cref="Languages.BlockILLanguage"/>; ignored by every other language.
+		/// Stop the decompiler pipeline after this many steps. <see cref="int.MaxValue"/> means "run
+		/// everything". The Debug Steps pane sets this to the index of a chosen step so it can show the
+		/// partial state at that point. Honoured by the C# language, whose steps span the IL transforms,
+		/// the ILAst-to-C# conversion and the C# AST transforms; ignored by every other language.
+		/// A limit landing in the IL phase yields an ILAst dump rather than C#, because the halted
+		/// member never reaches the C# builders.
 		/// </summary>
 		public int StepLimit { get; set; } = int.MaxValue;
 
 		/// <summary>
-		/// When true, transforms emit verbose debug information about their behaviour. Only
-		/// meaningful in combination with <see cref="StepLimit"/> — the Debug Steps pane sets
-		/// it on the "Debug this step" context-menu action.
+		/// Step whose changed node should be highlighted after a debug-stepper re-decompile.
+		/// This can differ from <see cref="StepLimit"/> when showing the state after a step,
+		/// because the next recorded step is where the pipeline stops.
+		/// </summary>
+		public int? HighlightStep { get; set; }
+
+		/// <summary>
+		/// When true, the pipeline breaks into an attached debugger on reaching <see cref="StepLimit"/>
+		/// and then carries on, instead of halting there. Only meaningful in combination with
+		/// <see cref="StepLimit"/> — the Debug Steps pane sets it on the "Debug this step"
+		/// context-menu action.
 		/// </summary>
 		public bool IsDebug { get; set; }
+
+		/// <summary>
+		/// When true, the pipeline records its steps so a step view can display them. It travels with
+		/// the request rather than being read from the view: a step index only means anything against
+		/// a run recorded the same way, so the full run and the step-limited replay of one of its
+		/// indices have to agree on it, and the decompile that reads it happens on a background task.
+		/// </summary>
+		public bool RecordSteps { get; set; }
 
 		/// <summary>
 		/// Optional sink for whole-project decompilation progress. Wired onto
@@ -74,6 +93,14 @@ namespace ICSharpCode.ILSpy
 		/// file currently being written; ignored on single-member decompiles.
 		/// </summary>
 		public IProgress<DecompilationProgress>? ProgressIndicator { get; set; }
+
+		/// <summary>
+		/// Filled by the project-export path with the members, files and resources the decompiler
+		/// could not handle. The export writes the error text into the affected sources and runs to
+		/// completion instead of failing, so the caller's result report is where the user learns
+		/// that anything went wrong at all - the ITextOutput of an export is discarded.
+		/// </summary>
+		public IList<DecompilerException> DecompilationErrors { get; } = new List<DecompilerException>();
 
 		// Deliberately no parameterless constructor: every decompilation must make an explicit
 		// choice of settings. Callers inside the app want the user's current settings (see

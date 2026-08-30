@@ -165,6 +165,60 @@ Are you sure you want to continue?</value>
   <data name="BaseTypes" xml:space="preserve">
     <value>Base Types</value>
   </data>
+  <data name="BookmarkAssemblyMissing" xml:space="preserve">
+    <value>Assembly for this bookmark no longer exists on disk, remove bookmark?</value>
+  </data>
+  <data name="BookmarkDelete" xml:space="preserve">
+    <value>Delete Bookmark</value>
+  </data>
+  <data name="BookmarkDisable" xml:space="preserve">
+    <value>Enable / Disable Bookmark</value>
+  </data>
+  <data name="BookmarkExport" xml:space="preserve">
+    <value>Export Bookmarks...</value>
+  </data>
+  <data name="BookmarkExportTitle" xml:space="preserve">
+    <value>Export Bookmarks</value>
+  </data>
+  <data name="BookmarkImport" xml:space="preserve">
+    <value>Import Bookmarks...</value>
+  </data>
+  <data name="BookmarkImportFailed" xml:space="preserve">
+    <value>The selected file could not be read as a bookmark file. Your bookmarks were left unchanged.</value>
+  </data>
+  <data name="BookmarkImportMerge" xml:space="preserve">
+    <value>Merge</value>
+  </data>
+  <data name="BookmarkImportReplace" xml:space="preserve">
+    <value>Replace</value>
+  </data>
+  <data name="BookmarkImportReplaceOrMerge" xml:space="preserve">
+    <value>Replace the current bookmarks with the imported ones, or merge them?</value>
+  </data>
+  <data name="BookmarkImportTitle" xml:space="preserve">
+    <value>Import Bookmarks</value>
+  </data>
+  <data name="BookmarkModule" xml:space="preserve">
+    <value>Module</value>
+  </data>
+  <data name="BookmarkNextBookmark" xml:space="preserve">
+    <value>Next Bookmark</value>
+  </data>
+  <data name="BookmarkNextInFile" xml:space="preserve">
+    <value>Next Bookmark in File</value>
+  </data>
+  <data name="BookmarkPreviousBookmark" xml:space="preserve">
+    <value>Previous Bookmark</value>
+  </data>
+  <data name="BookmarkPreviousInFile" xml:space="preserve">
+    <value>Previous Bookmark in File</value>
+  </data>
+  <data name="BookmarkToggle" xml:space="preserve">
+    <value>Toggle Bookmark</value>
+  </data>
+  <data name="Bookmarks" xml:space="preserve">
+    <value>Bookmarks</value>
+  </data>
   <data name="C_lone" xml:space="preserve">
     <value>C_lone</value>
   </data>
@@ -384,6 +438,9 @@ Are you sure you want to continue?</value>
   <data name="DecompilerSettings.FSpecificOptions" xml:space="preserve">
     <value>F#-specific options</value>
   </data>
+  <data name="DecompilerSettings.FieldKeyword" xml:space="preserve">
+    <value>Use the 'field' keyword in property accessors</value>
+  </data>
   <data name="DecompilerSettings.FileScopedNamespaces" xml:space="preserve">
     <value>Use file-scoped namespace declarations</value>
   </data>
@@ -522,6 +579,9 @@ Are you sure you want to continue?</value>
   <data name="DecompilerSettings.UnsignedRightShift" xml:space="preserve">
     <value>Unsigned right shift (&gt;&gt;&gt;)</value>
   </data>
+  <data name="DecompilerSettings.UseDefaultLiterals" xml:space="preserve">
+    <value>Use "default" literals without an explicit type</value>
+  </data>
   <data name="DecompilerSettings.UseDiscards" xml:space="preserve">
     <value>Use discards</value>
   </data>
@@ -657,6 +717,9 @@ Are you sure you want to continue?</value>
   <data name="ExpandUsingDeclarationsAfterDecompilation" xml:space="preserve">
     <value>Expand using declarations after decompilation</value>
   </data>
+  <data name="ExpandXmlDocumentationCommentsAfterDecompilation" xml:space="preserve">
+    <value>Expand XML documentation comments after decompilation</value>
+  </data>
   <data name="ExportProjectSolution" xml:space="preserve">
     <value>Export Project/Solution...</value>
   </data>
@@ -705,6 +768,9 @@ Are you sure you want to continue?</value>
   <data name="HighlightMatchingBraces" xml:space="preserve">
     <value>Highlight matching braces</value>
   </data>
+  <data name="HighlightMemberReferences" xml:space="preserve">
+    <value>Single-click highlights member references (Ctrl+Click navigates)</value>
+  </data>
   <data name="ILSpyAboutPageTxt" xml:space="preserve">
     <value>ILSpyAboutPage.txt</value>
   </data>
@@ -725,6 +791,9 @@ Are you sure you want to continue?</value>
   </data>
   <data name="InsertUsingDeclarations" xml:space="preserve">
     <value>Insert using declarations</value>
+  </data>
+  <data name="InvalidTargetFramework" xml:space="preserve">
+    <value>Unknown target framework. Enter a moniker such as net48 or net6.0.</value>
   </data>
   <data name="ListDeleteConfirmation" xml:space="preserve">
     <value>Are you sure that you want to delete the selected assembly list?</value>
@@ -835,11 +904,56 @@ Please disable all filters that might hide the item (i.e. activate "View &gt; Sh
   <data name="OpenFrom" xml:space="preserve">
     <value>Open From GAC</value>
   </data>
+  <data name="OpenFromProcess_AddEntryAssembly" xml:space="preserve">
+    <value>Add _Entry Assembly</value>
+  </data>
+  <data name="OpenFromProcess_AddSelected" xml:space="preserve">
+    <value>_Add Selected</value>
+  </data>
+  <data name="OpenFromProcess_Architecture" xml:space="preserve">
+    <value>Architecture</value>
+  </data>
+  <data name="OpenFromProcess_Assemblies" xml:space="preserve">
+    <value>Assemblies loaded in the selected process:</value>
+  </data>
+  <data name="OpenFromProcess_EntryAssembly" xml:space="preserve">
+    <value>Entry Assembly</value>
+  </data>
+  <data name="OpenFromProcess_Filter" xml:space="preserve">
+    <value>_Filter:</value>
+  </data>
+  <data name="OpenFromProcess_InMemoryAssembly" xml:space="preserve">
+    <value>(loaded from memory - cannot be opened)</value>
+  </data>
+  <data name="OpenFromProcess_Location" xml:space="preserve">
+    <value>Location</value>
+  </data>
+  <data name="OpenFromProcess_Pid" xml:space="preserve">
+    <value>PID</value>
+  </data>
+  <data name="OpenFromProcess_Process" xml:space="preserve">
+    <value>Process</value>
+  </data>
+  <data name="OpenFromProcess_Refresh" xml:space="preserve">
+    <value>_Refresh</value>
+  </data>
+  <data name="OpenFromProcess_Runtime" xml:space="preserve">
+    <value>Runtime</value>
+  </data>
+  <data name="OpenFromProcess_Title" xml:space="preserve">
+    <value>Open from Running Process</value>
+  </data>
+  <data name="OpenFromProcess_VisibilityHint" xml:space="preserve">
+    <value>Only .NET processes of the current user are listed. Processes started with diagnostics disabled do not appear.</value>
+  </data>
   <data name="OpenFrom_GAC" xml:space="preserve">
     <value>Open from _GAC...</value>
   </data>
   <data name="OpenFrom_NuGetFeed" xml:space="preserve">
     <value>Open from _NuGet feed...</value>
+  </data>
+  <data name="OpenFrom_RunningProcess" xml:space="preserve">
+    <value>Open from running _process...</value>
   </data>
   <data name="OpenListDialog__Delete" xml:space="preserve">
     <value>_Delete</value>
@@ -922,6 +1036,9 @@ Do you want to continue?</value>
   <data name="RenameList" xml:space="preserve">
     <value>Rename list</value>
   </data>
+  <data name="ResetTargetFramework" xml:space="preserve">
+    <value>Reset Target Framework</value>
+  </data>
   <data name="ResetToDefaults" xml:space="preserve">
     <value>Reset to defaults</value>
   </data>
@@ -984,6 +1101,9 @@ Do you want to continue?</value>
   </data>
   <data name="SelectVersionDropdownTooltip" xml:space="preserve">
     <value>Select version of language to output (Alt+E)</value>
+  </data>
+  <data name="SetTargetFramework" xml:space="preserve">
+    <value>Set Target Framework...</value>
   </data>
   <data name="SettingsChangeRestartRequired" xml:space="preserve">
     <value>You must restart ILSpy for the change to take effect.</value>
@@ -1071,6 +1191,9 @@ Do you want to continue?</value>
   </data>
   <data name="TabSize" xml:space="preserve">
     <value>Tab size:</value>
+  </data>
+  <data name="TargetFramework" xml:space="preserve">
+    <value>Target framework:</value>
   </data>
   <data name="Theme" xml:space="preserve">
     <value>Theme</value>

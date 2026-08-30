@@ -26,13 +26,13 @@ using ICSharpCode.ILSpyX.Abstractions;
 using ICSharpCode.ILSpyX.Search;
 
 using ICSharpCode.ILSpy.Languages;
+using ICSharpCode.ILSpy.TreeNodes;
 
 namespace ICSharpCode.ILSpy.Search
 {
 	/// <summary>
 	/// Builds the <see cref="SearchResult"/> objects the search strategies stream into the
-	/// pane's result queue. Mirrors WPF's <c>SearchResultFactory</c>: fitness ranking
-	/// privileges short names (shorter == higher fitness == higher rank); compiler-generated
+	/// pane's result queue. Fitness ranking privileges short names (shorter == higher fitness == higher rank); compiler-generated
 	/// names (those starting with <c>&lt;</c>) get fitness 0 so they sink to the bottom.
 	/// </summary>
 	internal sealed class AvaloniaSearchResultFactory : ISearchResultFactory
@@ -57,7 +57,7 @@ namespace ICSharpCode.ILSpy.Search
 				Assembly = entity.ParentModule?.FullAssemblyName ?? string.Empty,
 				ToolTip = entity.ParentModule?.MetadataFile?.FileName,
 				Image = GetIcon(entity),
-				LocationImage = declaringType != null ? Images.Class : Images.Namespace,
+				LocationImage = declaringType != null ? TypeTreeNode.GetIcon(declaringType) : Images.Namespace,
 				AssemblyImage = Images.Assembly,
 			};
 		}
@@ -67,9 +67,9 @@ namespace ICSharpCode.ILSpy.Search
 			return new ResourceSearchResult {
 				Resource = resource,
 				Fitness = 1.0f / Math.Max(1, resource.Name.Length),
-				Image = Images.Library,
+				Image = node.Icon ?? Images.Resource,
 				Name = resource.Name,
-				LocationImage = Images.Library,
+				LocationImage = parent.Icon ?? Images.Library,
 				Location = (parent.Text as string) ?? string.Empty,
 				Assembly = module.FullName,
 				ToolTip = module.FileName,
@@ -124,12 +124,14 @@ namespace ICSharpCode.ILSpy.Search
 			_ => member.Name,
 		};
 
+		// Delegate to the tree nodes' icon helpers so search results carry the same composed
+		// icons (kind-specific base + accessibility/static overlays) as the assembly tree.
 		static object GetIcon(IEntity member) => member switch {
-			ITypeDefinition => Images.Class,
-			IField => Images.Field,
-			IProperty => Images.Property,
-			IMethod => Images.Method,
-			IEvent => Images.Event,
+			ITypeDefinition t => TypeTreeNode.GetIcon(t),
+			IField f => FieldTreeNode.GetIcon(f),
+			IProperty p => PropertyTreeNode.GetIcon(p),
+			IMethod m => MethodTreeNode.GetIcon(m),
+			IEvent e => EventTreeNode.GetIcon(e),
 			_ => Images.Library,
 		};
 	}

@@ -26,7 +26,6 @@ using System.Linq;
 using System.Reflection;
 using System.Reflection.Metadata.Ecma335;
 
-using ICSharpCode.Decompiler.CSharp.Resolver;
 using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.CSharp.Syntax.PatternMatching;
 using ICSharpCode.Decompiler.IL;
@@ -110,7 +109,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 			[AllowNull]
 			public List<(Statement Statement, IMember Member, Expression Initializer, bool DependsOnConstructorBody)> Statements;
 
-			public Dictionary<Statement, List<Statement>>? StatementToOtherCtorsMap;
+			public Dictionary<Statement, List<(Statement Statement, Expression Initializer)>>? StatementToOtherCtorsMap;
 
 			public bool HasDuplicateAssignments { get; private set; }
 			public bool IsUnsafe { get; private set; }
@@ -187,6 +186,30 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				return sequence;
 			}
 
+			internal static bool IsDefaultValueInitializer(Expression initializer)
+			{
+				if (initializer is DefaultValueExpression)
+					return true;
+				var rr = initializer.GetResolveResult();
+				if (!rr.IsCompileTimeConstant)
+					return false;
+				return rr.ConstantValue switch {
+					null or false or '\0'
+						or (sbyte)0 or (byte)0 or (short)0 or (ushort)0
+						or 0 or 0u or 0L or 0uL => true,
+					// Equality is not identity for these: -0.0 equals 0.0, and 0.00m equals 0m
+					// while carrying a different scale. Both differences are observable
+					// (1.0 / -0.0 is negative infinity; 0.00m prints as "0.00"), so dropping
+					// such an initializer as a redundant default would change behaviour on
+					// recompile. Compare the representation rather than the value.
+					// (GetBytes rather than SingleToInt32Bits: netstandard2.0 lacks the latter.)
+					float f => BitConverter.ToInt32(BitConverter.GetBytes(f), 0) == 0,
+					double d => BitConverter.DoubleToInt64Bits(d) == 0,
+					decimal m => m == 0m && decimal.GetBits(m)[3] == 0,
+					_ => false,
+				};
+			}
+
 			private static bool CanHaveInitializer(IMember member, ConstructorInitializerAnalyzer context)
 			{
 				if (context.MemberToDeclaringSyntaxNodeMap == null)
@@ -195,7 +218,9 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					return true;
 				return declaringSyntaxNode is FieldDeclaration
 					or PropertyDeclaration { IsAutomaticProperty: true }
-					or EventDeclaration;
+					or EventDeclaration
+					// backing-field store of a field-backed property (initializers bypass the setter)
+					|| (declaringSyntaxNode is PropertyDeclaration && member is IField);
 			}
 
 			public bool IsMatch(ConstructorDeclaration ctor)
@@ -223,7 +248,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 						list = [];
 						StatementToOtherCtorsMap[stmt] = list;
 					}
-					list.Add(otherStmt);
+					list.Add((otherStmt, otherInitializer));
 					otherStmt = otherStmt.GetNextStatement();
 				}
 				return true;
@@ -285,6 +310,22 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					.Select(m => (symbol: m.GetSymbol(), entity: (EntityDeclaration)m))
 					.Where(_ => _.symbol is IMember)
 					.ToDictionary(_ => (IMember)_.symbol!, _ => _.entity);
+
+				if (context.Settings.FieldKeyword)
+				{
+					// Constructor stores to the backing field of a field-backed property become
+					// the property's initializer. The field only keeps its own declaration (and
+					// mapping) when the property could not be transformed.
+					foreach (var pd in members.OfType<PropertyDeclaration>())
+					{
+						if (pd.GetSymbol() is IProperty property
+							&& PatternStatementTransform.TryGetBackingField(property, out var backingField)
+							&& !MemberToDeclaringSyntaxNodeMap.ContainsKey(backingField))
+						{
+							MemberToDeclaringSyntaxNodeMap.Add(backingField, pd);
+						}
+					}
+				}
 
 				List<ConstructorDeclaration> constructorsNotChainedWithThis = [];
 				List<ConstructorDeclaration> allCtors = [];
@@ -356,6 +397,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					var initializer = InitializerSequence.Analyze(this, ctor, ctorMethod);
 
 					if (initializer is { CoversFullBody: true, HasDuplicateAssignments: false, Statements.Count: > 0 }
+						&& !initializer.Statements.Any(statement => ReferencesInstanceMember(statement.Initializer))
 						&& ctorMethod.Accessibility == expectedCtorAccessibility)
 					{
 						bool transformToPrimaryConstructor = MetadataTokens.GetRowNumber(ctorMethod.MetadataToken) == firstMethodRowNumber;
@@ -403,6 +445,24 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					}
 				}
 
+				bool ReferencesInstanceMember(Expression expression)
+				{
+					foreach (var node in expression.DescendantsAndSelf.OfType<Expression>())
+					{
+						switch (node.GetResolveResult())
+						{
+							case ThisResolveResult:
+								return true;
+							case MemberResolveResult {
+								TargetResult: ThisResolveResult,
+								Member: { IsStatic: false } member
+							} when member is not IField field || !IsGeneratedPrimaryConstructorBackingField(field):
+								return true;
+						}
+					}
+					return false;
+				}
+
 				if (StaticConstructor != null)
 				{
 					StaticInitializers = InitializerSequence.Analyze(this, StaticConstructorDecl!, StaticConstructor);
@@ -430,13 +490,27 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 						if (sequence == null)
 							return false;
 
+						bool sequenceMatchesAllCtors = true;
 						for (int i = 1; i < constructorsNotChainedWithThis.Count; i++)
 						{
 							if (!sequence.IsMatch(constructorsNotChainedWithThis[i]))
-								return false;
+							{
+								sequenceMatchesAllCtors = false;
+								break;
+							}
 						}
 
-						if (!isPrimaryCtor)
+						if (!sequenceMatchesAllCtors)
+						{
+							// The non-this-chained constructors disagree on their leading field
+							// assignments, so there is no shared field-initializer sequence to extract.
+							// A primary constructor must extract its initializers (its parameters drive
+							// them), so bail; otherwise keep the assignments in the bodies but continue,
+							// so the this(...)/base(...) chains still get lifted to initializers.
+							if (isPrimaryCtor)
+								return false;
+						}
+						else if (!isPrimaryCtor)
 						{
 							if (!sequence.Statements.Any(s => s.DependsOnConstructorBody))
 								InstanceInitializers = sequence;
@@ -481,6 +555,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 
 				var ci = new ConstructorInitializer { ConstructorInitializerType = type };
 
+				context.Step("Move constructor call to initializer", stmt);
 				// Move arguments from invocation to initializer:
 				invocation.GetChildren(Slots.Argument).MoveTo(ci.Arguments);
 				// Add the initializer: (unless it is the default 'base()')
@@ -489,6 +564,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 
 				// Remove the statement
 				stmt.Remove();
+				context.EndStep(constructorDeclaration.Initializer);
 
 				return true;
 			}
@@ -507,7 +583,10 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 						// e.g. when a single static constructor is decompiled in isolation -- so the
 						// assignment must remain in the constructor body.
 						if (kind is InitializerKind.Primary)
+						{
+							context.Step("Remove redundant primary constructor assignment", stmt);
 							stmt.Remove();
+						}
 						continue;
 					}
 
@@ -518,7 +597,10 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 							v = fd.Variables.Single();
 							if (v.Initializer is null)
 							{
-								v.Initializer = initializer.Detach();
+								context.Step("Move assignment to field initializer", stmt);
+								var movedInitializer = initializer.Detach();
+								v.Initializer = movedInitializer;
+								context.EndStep(movedInitializer);
 							}
 							else if (kind == InitializerKind.Static)
 							{
@@ -545,10 +627,21 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 							}
 							break;
 						case PropertyDeclaration pd:
-							Debug.Assert(pd.IsAutomaticProperty);
-							if (pd.Initializer is null)
+							Debug.Assert(pd.IsAutomaticProperty || member is IField);
+							if (member is IField { DeclaringTypeDefinition.Kind: TypeKind.Struct }
+								&& InitializerSequence.IsDefaultValueInitializer(initializer))
 							{
-								pd.Initializer = initializer.Detach();
+								// Struct constructors zero-initialize backing fields the constructor
+								// does not assign (auto-default structs); recompilation regenerates
+								// these stores, so they are dropped instead of becoming initializers.
+								context.Step("Drop implicit struct default initialization", stmt);
+							}
+							else if (pd.Initializer is null)
+							{
+								context.Step("Move assignment to property initializer", stmt);
+								var movedInitializer = initializer.Detach();
+								pd.Initializer = movedInitializer;
+								context.EndStep(movedInitializer);
 							}
 							else
 							{
@@ -560,7 +653,10 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 							v = ev.Variables.Single();
 							if (v.Initializer is null)
 							{
-								v.Initializer = initializer.Detach();
+								context.Step("Move assignment to event initializer", stmt);
+								var movedInitializer = initializer.Detach();
+								v.Initializer = movedInitializer;
+								context.EndStep(movedInitializer);
 							}
 							else
 							{
@@ -576,16 +672,25 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					stmt.Remove();
 
 					if (sequence.StatementToOtherCtorsMap != null &&
-						sequence.StatementToOtherCtorsMap.TryGetValue(stmt, out var otherStmts))
+						sequence.StatementToOtherCtorsMap.TryGetValue(stmt, out var otherCtors))
 					{
-						foreach (var otherStmt in otherStmts)
+						var otherInitializers = new List<Expression>(otherCtors.Count);
+						foreach (var (otherStmt, otherInitializer) in otherCtors)
 						{
 							otherStmt.Remove();
+							otherInitializers.Add(otherInitializer);
+						}
+						// Preserve the discarded copies so the breakpoint for this initializer can be
+						// emitted in every constructor that runs it, not just the one it was lifted from.
+						if (otherInitializers.Count > 0)
+						{
+							initializer.AddAnnotation(new MemberInitializerInOtherConstructorsAnnotation(otherInitializers));
 						}
 					}
 
 					if (sequence.IsUnsafe && IntroduceUnsafeModifier.IsUnsafe(initializer))
 					{
+						context.Step("Add unsafe modifier to initialized member", declaringSyntaxNode);
 						declaringSyntaxNode.Modifiers |= Modifiers.Unsafe;
 					}
 				}
@@ -618,6 +723,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 						var insertionPoint = (AstNode?)this.TypeDeclaration.TypeParameters.LastOrDefault() ?? this.TypeDeclaration.NameToken;
 						foreach (var param in PrimaryConstructorDecl.Parameters)
 						{
+							context.Step("Move primary constructor parameter to type", param);
 							param.Remove();
 							this.TypeDeclaration.InsertChildAfter(insertionPoint, param, Slots.Parameter);
 							insertionPoint = param;
@@ -672,6 +778,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 
 					if (PrimaryConstructorDecl.HasModifier(Modifiers.Unsafe))
 					{
+						context.Step("Move unsafe modifier from primary constructor to type", this.TypeDeclaration);
 						this.TypeDeclaration.Modifiers |= Modifiers.Unsafe;
 					}
 
@@ -681,11 +788,14 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 
 						var baseType = TypeDeclaration.BaseTypes.First();
 						var newBaseType = new InvocationAstType();
+						context.Step("Move primary constructor initializer to base type", baseType);
 						baseType.ReplaceWith(newBaseType);
 						newBaseType.BaseType = baseType;
 						initializer.Arguments.MoveTo(newBaseType.Arguments);
+						context.EndStep(newBaseType);
 					}
 
+					context.Step("Remove primary constructor body", PrimaryConstructorDecl);
 					PrimaryConstructorDecl.Remove();
 				}
 
@@ -696,6 +806,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 
 					if (IsBeforeFieldInit && StaticConstructorDecl.Body is { Statements.Count: 0 })
 					{
+						context.Step("Remove empty static constructor", StaticConstructorDecl);
 						StaticConstructorDecl.Remove();
 					}
 				}
@@ -725,7 +836,10 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					bool retainBecauseOfDocumentation = context.Settings.ShowXmlDocumentation
 						&& context.DecompileRun.DocumentationProvider?.GetDocumentation(ctorMethod) != null;
 					if (!retainBecauseOfDocumentation)
+					{
+						context.Step("Remove implicit constructor", ctor);
 						ctor.Remove();
+					}
 				}
 			}
 

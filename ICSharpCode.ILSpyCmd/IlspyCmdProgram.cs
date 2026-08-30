@@ -1,11 +1,32 @@
+// Copyright (c) 2019 Christoph Wille
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this
+// software and associated documentation files (the "Software"), to deal in the Software
+// without restriction, including without limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
+// to whom the Software is furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all copies or
+// substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+// FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.ComponentModel.DataAnnotations;
 using System.IO;
 using System.IO.Compression;
 using System.IO.MemoryMappedFiles;
 using System.Linq;
+using System.Globalization;
 using System.Reflection.Metadata;
+using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
 using System.Threading;
 using System.Threading.Tasks;
@@ -15,6 +36,7 @@ using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.CSharp.ProjectDecompiler;
 using ICSharpCode.Decompiler.DebugInfo;
+using ICSharpCode.Decompiler.Documentation;
 using ICSharpCode.Decompiler.Disassembler;
 using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.Solution;
@@ -87,11 +109,25 @@ Examples:
 		[Option("-t|--type <type-name>", "The fully qualified name of the type to decompile.", CommandOptionType.SingleValue)]
 		public string TypeName { get; }
 
+		[Option("-m|--member <doc-id-or-token>", "The single member to decompile: an XML documentation id string (e.g. \"M:System.String.Concat(System.String,System.String)\", as also accepted by the UI's --navigateto option) or a metadata token (e.g. 0x06000005).", CommandOptionType.SingleValue)]
+		public string MemberIdString { get; }
+
 		[Option("-il|--ilcode", "Show IL code.", CommandOptionType.NoValue)]
 		public bool ShowILCodeFlag { get; }
 
 		[Option("--il-sequence-points", "Show IL with sequence points. Implies -il.", CommandOptionType.NoValue)]
 		public bool ShowILSequencePointsFlag { get; }
+
+#if DEBUG
+		// ILAst is the decompiler's own working representation: it exists to debug transforms
+		// while developing ILSpy, so - like the UI's Debug Steps pane - it ships in debug builds
+		// only and is absent from the released tool.
+		[Option("--ilast", "Show the decompiler's intermediate representation (ILAst) of method bodies, after the full IL transform pipeline. Select what to dump with --type or --member; without either, every method of the assembly is dumped.", CommandOptionType.NoValue)]
+		public bool ShowILAstFlag { get; }
+
+		[Option("--after-transform <name-or-index>", "Stop the IL transform pipeline after the named transform (or after the transform at the given 1-based pipeline index) and show the ILAst at that point. Implies --ilast. Pass an unknown name to list the pipeline.", CommandOptionType.SingleValue)]
+		public string AfterTransformName { get; }
+#endif
 
 		[Option("-genpdb|--generate-pdb", "Generate PDB.", CommandOptionType.NoValue)]
 		public bool CreateDebugInfoFlag { get; }
@@ -111,6 +147,12 @@ Examples:
 
 		[Option("--decompile-baml", "When used with -p, decompile BAML resources to XAML files (Page items) instead of leaving them as raw byte streams.", CommandOptionType.NoValue)]
 		public bool DecompileBamlFlag { get; }
+
+		[Option("--dump-table <table>", "Dump a metadata table: prints RID, token, names, heap offsets and coded indexes of every row. <table> is the ECMA-335 table name (e.g. TypeDef, Property, MethodSemantics; case-insensitive) or table number (decimal or 0x-prefixed hex, e.g. 0x17).", CommandOptionType.SingleValue)]
+		public string DumpTableName { get; }
+
+		[Option("--json", "Output as JSON. Currently only supported together with --dump-table.", CommandOptionType.NoValue)]
+		public bool JsonOutputFlag { get; }
 
 		public string DecompilerVersion => "ilspycmd: " + typeof(ILSpyCmdProgram).Assembly.GetName().Version.ToString() +
 				Environment.NewLine
@@ -132,6 +174,11 @@ Examples:
 		[DirectoryExists]
 		[Option("-r|--referencepath <path>", "Path to a directory containing dependencies of the assembly that is being decompiled.", CommandOptionType.MultipleValue)]
 		public string[] ReferencePaths { get; }
+
+		[Option("--ignore-decompilation-errors", "Exit with success even when parts of the assembly could not be decompiled. " +
+			"The affected code carries the error text in the output and the failures are listed on stderr either way; " +
+			"only the exit status changes.", CommandOptionType.NoValue)]
+		public bool IgnoreDecompilationErrorsFlag { get; }
 
 		[Option("--no-dead-code", "Remove dead code.", CommandOptionType.NoValue)]
 		public bool RemoveDeadCode { get; }
@@ -210,6 +257,12 @@ Examples:
 				Directory.CreateDirectory(outputDirectory);
 			}
 
+			if (JsonOutputFlag && DumpTableName == null)
+			{
+				app.Error.WriteLine("The --json option is currently only supported together with --dump-table.");
+				return ProgramExitCodes.EX_USAGE;
+			}
+
 			try
 			{
 				if (CreateCompilableProjectFlag)
@@ -218,7 +271,7 @@ Examples:
 					{
 						string projectFileName = Path.Combine(outputDirectory, Path.GetFileNameWithoutExtension(InputAssemblyNames[0]) + ".csproj");
 						DecompileAsProject(InputAssemblyNames[0], projectFileName);
-						return 0;
+						return ExitCodeForDecompilationErrors();
 					}
 					var projects = new List<ProjectItem>();
 					foreach (var file in InputAssemblyNames)
@@ -229,7 +282,7 @@ Examples:
 						projects.Add(new ProjectItem(projectFileName, projectId.PlatformName, projectId.Guid, projectId.TypeGuid));
 					}
 					SolutionCreator.WriteSolutionFile(Path.Combine(outputDirectory, Path.GetFileNameWithoutExtension(outputDirectory) + ".sln"), projects);
-					return 0;
+					return ExitCodeForDecompilationErrors();
 				}
 				else if (GenerateDiagrammer)
 				{
@@ -259,7 +312,7 @@ Examples:
 						if (result != 0)
 							return result;
 					}
-					return 0;
+					return ExitCodeForDecompilationErrors();
 				}
 			}
 			catch (Exception ex)
@@ -306,6 +359,22 @@ Examples:
 
 					return ShowIL(fileName, output);
 				}
+#if DEBUG
+				else if (ShowILAstFlag || AfterTransformName != null)
+				{
+					if (outputDirectory != null)
+					{
+						// per-file writer, disposed here: the shared 'output' is only closed once
+						// at the end of the run, which would lose the buffered tail of every file
+						// but the last when dumping multiple assemblies
+						string outputName = Path.GetFileNameWithoutExtension(fileName);
+						using var ilastOutput = File.CreateText(Path.Combine(outputDirectory, outputName) + ".ilast");
+						return ShowILAst(fileName, ilastOutput, app);
+					}
+
+					return ShowILAst(fileName, output, app);
+				}
+#endif
 				else if (CreateDebugInfoFlag)
 				{
 					string pdbFileName = null;
@@ -339,13 +408,45 @@ Examples:
 				{
 					return ExtractResource(fileName, ResourceName, output, outputDirectory, app);
 				}
+				else if (DumpTableName != null)
+				{
+					if (!MetadataTableDumper.TryParseTableName(DumpTableName, out var table))
+					{
+						app.Error.WriteLine($"Unknown metadata table '{DumpTableName}'.");
+						app.Error.WriteLine($"Supported tables: {MetadataTableDumper.SupportedTableNames}");
+						return ProgramExitCodes.EX_USAGE;
+					}
+
+					if (outputDirectory != null)
+					{
+						// per-file writer, disposed here: the shared 'output' is only closed once
+						// at the end of the run, which would lose the buffered tail of every file
+						// but the last when dumping multiple assemblies
+						string outputName = Path.GetFileNameWithoutExtension(fileName);
+						using var tableOutput = File.CreateText(Path.Combine(outputDirectory, outputName) + $".{table}.{(JsonOutputFlag ? "json" : "txt")}");
+						return MetadataTableDumper.DumpTable(fileName, tableOutput, table, JsonOutputFlag);
+					}
+
+					return MetadataTableDumper.DumpTable(fileName, output, table, JsonOutputFlag);
+				}
 				else
 				{
+					if (MemberIdString != null && TypeName != null)
+					{
+						app.Error.WriteLine("The --type and --member options are mutually exclusive.");
+						return ProgramExitCodes.EX_USAGE;
+					}
+
 					if (outputDirectory != null)
 					{
 						string outputName = Path.GetFileNameWithoutExtension(fileName);
 						output = File.CreateText(Path.Combine(outputDirectory,
 							(string.IsNullOrEmpty(TypeName) ? outputName : TypeName) + ".decompiled.cs"));
+					}
+
+					if (MemberIdString != null)
+					{
+						return DecompileMember(fileName, output, MemberIdString);
 					}
 
 					return Decompile(fileName, output, TypeName);
@@ -437,7 +538,9 @@ Examples:
 			return decompilerSettings;
 		}
 
-		CSharpDecompiler GetDecompiler(string assemblyFileName)
+		CSharpDecompiler GetDecompiler(string assemblyFileName) => GetDecompiler(assemblyFileName, out _);
+
+		CSharpDecompiler GetDecompiler(string assemblyFileName, out DecompilerSettings settings)
 		{
 			var module = new PEFile(assemblyFileName);
 			var resolver = new UniversalAssemblyResolver(assemblyFileName, false, module.Metadata.DetectTargetFrameworkId());
@@ -445,7 +548,8 @@ Examples:
 			{
 				resolver.AddSearchDirectory(path);
 			}
-			return new CSharpDecompiler(assemblyFileName, resolver, GetSettings(module)) {
+			settings = GetSettings(module);
+			return new CSharpDecompiler(assemblyFileName, resolver, settings) {
 				DebugInfoProvider = TryLoadPDB(module)
 			};
 		}
@@ -554,6 +658,108 @@ Examples:
 			return 0;
 		}
 
+#if DEBUG
+		int ShowILAst(string assemblyFileName, TextWriter output, CommandLineApplication app)
+		{
+			if (MemberIdString != null && TypeName != null)
+			{
+				app.Error.WriteLine("The --type and --member options are mutually exclusive.");
+				return ProgramExitCodes.EX_USAGE;
+			}
+
+			int transformCount = ILAstDumper.TransformCount;
+			if (AfterTransformName != null
+				&& !ILAstDumper.TryResolveTransformCount(AfterTransformName, out transformCount, out string transformError))
+			{
+				app.Error.WriteLine(transformError);
+				return ProgramExitCodes.EX_USAGE;
+			}
+
+			CSharpDecompiler decompiler = GetDecompiler(assemblyFileName, out var settings);
+			var mainModule = decompiler.TypeSystem.MainModule;
+			var metadata = mainModule.MetadataFile.Metadata;
+			IEnumerable<IMethod> methods;
+
+			if (MemberIdString != null)
+			{
+				if (!TryResolveMembers(decompiler.TypeSystem, MemberIdString, out var handles, out string error))
+				{
+					Console.Error.WriteLine(error);
+					return ProgramExitCodes.EX_DATAERR;
+				}
+				// The short form of an overloaded method names the whole group; dumping every
+				// body beats picking one of them silently.
+				var resolved = handles.Where(h => h.Kind == HandleKind.MethodDefinition).ToArray();
+				if (resolved.Length == 0)
+				{
+					Console.Error.WriteLine($"'{MemberIdString}' does not name a method; ILAst exists for method bodies only.");
+					return ProgramExitCodes.EX_DATAERR;
+				}
+				if (resolved.Length > 1)
+				{
+					Console.Error.WriteLine($"'{MemberIdString.Trim()}' names {resolved.Length} methods; the ILAst of each is written below.");
+				}
+				methods = resolved.Select(h => mainModule.GetDefinition((MethodDefinitionHandle)h)).ToArray();
+			}
+			else if (TypeName != null)
+			{
+				if (!TryResolveType(decompiler.TypeSystem, TypeName, out ITypeDefinition typeDefinition, out string error))
+				{
+					Console.Error.WriteLine(error);
+					return ProgramExitCodes.EX_DATAERR;
+				}
+				// via the metadata handles, not ITypeDefinition.Methods: the latter drops every
+				// method that has method semantics, i.e. all property and event accessors
+				methods = metadata.GetTypeDefinition((TypeDefinitionHandle)typeDefinition.MetadataToken)
+					.GetMethods().Select(mainModule.GetDefinition);
+			}
+			else
+			{
+				methods = metadata.MethodDefinitions.Select(mainModule.GetDefinition);
+			}
+
+			var textOutput = new PlainTextOutput(output);
+			var dumper = new ILAstDumper();
+			var errors = new List<DecompilerException>();
+			foreach (var method in methods)
+			{
+				var error = dumper.WriteMethod(decompiler, settings, method, transformCount, textOutput, CancellationToken.None);
+				if (error != null)
+					errors.Add(error);
+			}
+			ReportDecompilationErrors(assemblyFileName, errors);
+			return 0;
+		}
+#endif
+
+		readonly List<DecompilerException> decompilationErrors = new();
+
+		/// <summary>
+		/// Lists what the decompiler could not handle. The output was still written - with the error
+		/// text in place of the affected code - so this is the only sign anything went wrong, and
+		/// <see cref="ExitCodeForDecompilationErrors"/> keeps it from passing silently in a script.
+		/// </summary>
+		void ReportDecompilationErrors(string assemblyFileName, IReadOnlyList<DecompilerException> errors)
+		{
+			if (errors.Count == 0)
+				return;
+			decompilationErrors.AddRange(errors);
+			Console.Error.WriteLine($"While decompiling {assemblyFileName}:");
+			foreach (string line in CSharpDecompiler.GetErrorSummaryLines(errors.Count))
+			{
+				Console.Error.WriteLine(line);
+			}
+			foreach (var error in errors)
+			{
+				Console.Error.WriteLine("  " + CSharpDecompiler.GetErrorHeadline(error));
+			}
+		}
+
+		int ExitCodeForDecompilationErrors()
+		{
+			return decompilationErrors.Count == 0 || IgnoreDecompilationErrorsFlag ? 0 : ProgramExitCodes.EX_SOFTWARE;
+		}
+
 		ProjectId DecompileAsProject(string assemblyFileName, string projectFileName)
 		{
 			var module = new PEFile(assemblyFileName);
@@ -577,8 +783,11 @@ Examples:
 			{
 				decompiler = new WholeProjectDecompiler(settings, resolver, null, resolver, debugInfo);
 			}
-			using (var projectFileWriter = new StreamWriter(File.OpenWrite(projectFileName)))
-				return decompiler.DecompileProject(module, Path.GetDirectoryName(projectFileName), projectFileWriter);
+			ProjectId projectId;
+			using (var projectFileWriter = new StreamWriter(File.Create(projectFileName)))
+				projectId = decompiler.DecompileProject(module, Path.GetDirectoryName(projectFileName), projectFileWriter);
+			ReportDecompilationErrors(assemblyFileName, decompiler.Errors);
+			return projectId;
 		}
 
 		int Decompile(string assemblyFileName, TextWriter output, string typeName = null)
@@ -588,6 +797,7 @@ Examples:
 			if (typeName == null)
 			{
 				output.Write(decompiler.DecompileWholeModuleAsString());
+				ReportDecompilationErrors(assemblyFileName, decompiler.Errors);
 				return 0;
 			}
 
@@ -598,7 +808,148 @@ Examples:
 			}
 
 			output.Write(decompiler.DecompileTypeAsString(typeDefinition.FullTypeName));
+			ReportDecompilationErrors(assemblyFileName, decompiler.Errors);
 			return 0;
+		}
+
+		int DecompileMember(string assemblyFileName, TextWriter output, string idOrToken)
+		{
+			CSharpDecompiler decompiler = GetDecompiler(assemblyFileName);
+
+			if (!TryResolveMembers(decompiler.TypeSystem, idOrToken, out var handles, out string error))
+			{
+				Console.Error.WriteLine(error);
+				return ProgramExitCodes.EX_DATAERR;
+			}
+
+			// A short-form id names an overload group. Showing every member beats making the
+			// user re-run with a full signature, but the output must say so: otherwise several
+			// members arrive with nothing explaining why more than one was asked for.
+			if (handles.Length > 1)
+			{
+				var metadataFile = decompiler.TypeSystem.MainModule.MetadataFile;
+				output.WriteLine($"// '{idOrToken.Trim()}' names {handles.Length} members; all of them are shown below.");
+				foreach (var member in handles)
+				{
+					output.WriteLine($"// {metadataFile.GetIdString(member)}");
+				}
+				output.WriteLine();
+			}
+
+			bool first = true;
+			foreach (var member in handles)
+			{
+				if (!first)
+					output.WriteLine();
+				output.Write(decompiler.DecompileAsString(member));
+				first = false;
+			}
+			ReportDecompilationErrors(assemblyFileName, decompiler.Errors);
+			return 0;
+		}
+
+		/// <summary>
+		/// Resolves a member reference supplied on the command line: either an XML
+		/// documentation id string ("M:...", "P:...", "F:...", "E:..." or "T:...") or a
+		/// metadata token in hexadecimal "0x06000005" form. Documentation id strings use
+		/// the same syntax as the compiler-generated documentation files and the UI's
+		/// --navigateto option.
+		/// </summary>
+		static bool TryResolveMember(IDecompilerTypeSystem typeSystem, string idOrToken, out EntityHandle handle, out string error)
+		{
+			if (!TryResolveMembers(typeSystem, idOrToken, out var handles, out error))
+			{
+				handle = default;
+				return false;
+			}
+			handle = handles[0];
+			return true;
+		}
+
+		/// <summary>
+		/// As <see cref="TryResolveMember"/>, but reports every member the reference names. A
+		/// documentation id written without a parameter list names an overload group, and the
+		/// short form is what a user reaches for: spelling out the signature means knowing the
+		/// overload count beforehand, which is the thing they came here to find out.
+		/// </summary>
+		static bool TryResolveMembers(IDecompilerTypeSystem typeSystem, string idOrToken, out ImmutableArray<EntityHandle> handles, out string error)
+		{
+			handles = ImmutableArray<EntityHandle>.Empty;
+			error = null;
+			string trimmed = idOrToken.Trim();
+
+			if (trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+			{
+				if (!int.TryParse(trimmed.AsSpan(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int tokenValue))
+				{
+					error = $"'{trimmed}' is not a valid metadata token; expected a hexadecimal value like 0x06000005.";
+					return false;
+				}
+				var metadata = typeSystem.MainModule.MetadataFile.Metadata;
+				var candidate = MetadataTokens.EntityHandle(tokenValue);
+				int rowNumber = tokenValue & 0x00ffffff;
+				int rowCount = candidate.Kind switch {
+					HandleKind.TypeDefinition => metadata.TypeDefinitions.Count,
+					HandleKind.FieldDefinition => metadata.FieldDefinitions.Count,
+					HandleKind.MethodDefinition => metadata.MethodDefinitions.Count,
+					HandleKind.PropertyDefinition => metadata.PropertyDefinitions.Count,
+					HandleKind.EventDefinition => metadata.EventDefinitions.Count,
+					_ => 0,
+				};
+				if (rowNumber < 1 || rowNumber > rowCount)
+				{
+					error = $"Metadata token {trimmed} does not reference a type or member of this module.";
+					return false;
+				}
+				handles = ImmutableArray.Create(candidate);
+				return true;
+			}
+
+			var mainModule = typeSystem.MainModule.MetadataFile;
+			ImmutableArray<EntityHandle> found;
+			try
+			{
+				(_, found) = DocumentationIdSearch.Find(trimmed, new[] { mainModule });
+			}
+			catch (ReflectionNameParseException ex)
+			{
+				error = $"'{trimmed}' is not a valid documentation id string: {ex.Message}";
+				return false;
+			}
+			if (found.IsEmpty)
+			{
+				// "It exists, but not here" is worth saying: naming the assembly it does live in
+				// tells the user which one to point at, where a bare not-found leaves them
+				// guessing whether they mistyped the id.
+				if (ResolveElsewhere(typeSystem, trimmed) is { } elsewhere)
+				{
+					error = $"Member '{trimmed}' is defined in '{elsewhere.AssemblyName}', not in this module.";
+					return false;
+				}
+				error = $"Member '{trimmed}' was not found in this module. Expected an XML documentation id string (e.g. \"M:System.String.Concat(System.String,System.String)\") or a metadata token (e.g. 0x06000005). The parameter list and generic arities may be left off.";
+				return false;
+			}
+			handles = found;
+			return true;
+		}
+
+		/// <summary>
+		/// The module that defines the given id, when it is not the one being decompiled. Only an
+		/// exact id is tried: the loose ladder exists to help someone name a member of the module
+		/// in front of them, not to go hunting through its references.
+		/// </summary>
+		static IModule ResolveElsewhere(IDecompilerTypeSystem typeSystem, string idString)
+		{
+			try
+			{
+				var entity = IdStringProvider.FindEntity(idString, new SimpleTypeResolveContext(typeSystem.MainModule));
+				if (entity != null && entity.ParentModule != typeSystem.MainModule)
+					return entity.ParentModule;
+			}
+			catch (ReflectionNameParseException)
+			{
+			}
+			return null;
 		}
 
 		/// <summary>
