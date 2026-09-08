@@ -190,14 +190,16 @@ namespace ICSharpCode.Decompiler.IL
 			this.reader = body.GetILReader();
 			this.currentStack = ImmutableStack<ILVariable>.Empty;
 			this.expressionStack.Clear();
+			IType methodReturnType;
 			if (isRuntimeAsync)
 			{
-				this.methodReturnStackType = TaskType.UnpackAnyTask(compilation, method.ReturnType).GetStackType();
+				methodReturnType = TaskType.UnpackAnyTask(compilation, method.ReturnType);
 			}
 			else
 			{
-				this.methodReturnStackType = method.ReturnType.GetStackType();
+				methodReturnType = method.ReturnType;
 			}
+			this.methodReturnStackType = methodReturnType.GetStackType();
 			InitParameterVariables();
 			localVariables = InitLocalVariables();
 			foreach (var v in localVariables)
@@ -205,7 +207,7 @@ namespace ICSharpCode.Decompiler.IL
 				v.InitialValueIsInitialized = body.LocalVariablesInitialized;
 				v.UsesInitialValue = true;
 			}
-			this.mainContainer = new BlockContainer(expectedResultType: methodReturnStackType);
+			this.mainContainer = new BlockContainer(expectedResultType: methodReturnType);
 			this.blocksByOffset.Clear();
 			this.importQueue.Clear();
 			this.isBranchTarget = new BitSet(reader.Length);
@@ -543,7 +545,7 @@ namespace ICSharpCode.Decompiler.IL
 				var inst = decodedInstruction.Instruction;
 				if (inst.ResultType == StackType.Unknown && inst.OpCode != OpCode.InvalidBranch && inst.OpCode != OpCode.InvalidExpression)
 					Warn("Unknown result type (might be due to invalid IL or missing references)");
-				inst.CheckInvariant(ILPhase.InILReader);
+				inst.CheckInvariant(ILPhase.InILReader, compilation);
 				int end = reader.Offset;
 				inst.AddILRange(new Interval(start, end));
 				if (!decodedInstruction.PushedOnExpressionStack)
@@ -2128,10 +2130,7 @@ namespace ICSharpCode.Decompiler.IL
 				// (note: if the variable is merged across control-flow branches,
 				//  we'll reset the type to be based on the StackType)
 				IType type = inst.InferType(compilation);
-				if (type.GetStackType() != inst.ResultType)
-				{
-					type = compilation.FindType(inst.ResultType);
-				}
+				Debug.Assert(type.GetStackType() == inst.ResultType);
 				var v = new ILVariable(VariableKind.StackSlot, type, inst.ResultType);
 				v.HasGeneratedName = true;
 				currentStack = currentStack.Push(v);

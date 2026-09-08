@@ -25,10 +25,12 @@
 // round-trip tests, which verify correctness but not output quality.
 //
 // usage: dotnet run decompdiff.cs -- --old <commit-ish|ILSpy-checkout|Decompiler.dll> --new <...>
-//                                    [-o <report-dir>] [--build] [--refs <dir>]... <dll|dir|@list>...
+//                                    [-o <report-dir>] [--no-build] [--refs <dir>]... <dll|dir|@list>...
 //
-// - checkout args are built on demand (Release; restore keeps packages.lock.json
-//   whole via -p:RestoreEnablePackagePruning=false); pass --build to force rebuild.
+// - checkout args are built (Release; restore keeps packages.lock.json whole via
+//   -p:RestoreEnablePackagePruning=false) on every run, because a build older than
+//   the checkout measures code that is not the one named; pass --no-build to reuse
+//   the build a checkout already carries.
 // - a commit-ish (branch, tag, sha, FETCH_HEAD) is resolved against the repository
 //   the tool is run from and checked out into a worktree under
 //   ~/.cache/decompdiff/<repo>/<commit>, kept and reused so a rerun keeps the
@@ -42,11 +44,11 @@
 //
 // Reference handling: every assembly is decompiled out of a staging directory that
 // holds symlinks to itself, its original neighbours, and the transitive closure of
-// its references as found in --refs directories, the machine-wide NuGet cache, and
-// the reference-assembly pack matching the assembly's own target framework.
-// UniversalAssemblyResolver searches
-// that directory first (ResolveInternal -> SearchDirectory), so staging fixes both
-// classic failure modes - a sibling package that does not sit next to the assembly,
+// its references as found in --refs directories, the machine-wide NuGet cache, the
+// nugetfuzz package cache, and the reference-assembly pack matching the assembly's
+// own target framework. UniversalAssemblyResolver searches that directory first
+// (ResolveInternal -> SearchDirectory), so staging fixes both classic failure modes
+// - a sibling package that does not sit next to the assembly,
 // and the Windows-only mscorlib lookup that throws "Version not supported" on Linux
 // - while still driving the stable 2-arg CSharpDecompiler ctor. Both sides read the
 // SAME staging directory, so whatever stays unresolved degrades them identically
@@ -75,7 +77,7 @@ catch (AssertionFailedException)
 }
 
 string? oldSpec = null, newSpec = null, reportDir = null;
-bool forceBuild = false;
+bool skipBuild = false;
 var corpus = new List<string>();
 var refDirs = new List<string>();
 for (int i = 0; i < args.Length; i++)
@@ -92,7 +94,10 @@ for (int i = 0; i < args.Length; i++)
 			reportDir = args[++i];
 			break;
 		case "--build":
-			forceBuild = true;
+			// Building is what happens anyway; accepted so older invocations keep working.
+			break;
+		case "--no-build":
+			skipBuild = true;
 			break;
 		case "--refs":
 			refDirs.Add(args[++i]);
@@ -115,7 +120,7 @@ for (int i = 0; i < args.Length; i++)
 }
 if (oldSpec == null || newSpec == null || corpus.Count == 0)
 {
-	Console.Error.WriteLine("usage: decompdiff --old <commit-ish|ILSpy-checkout|Decompiler.dll> --new <...> [-o report-dir] [--build] [--refs <dir>]... <dll|dir|@list>...");
+	Console.Error.WriteLine("usage: decompdiff --old <commit-ish|ILSpy-checkout|Decompiler.dll> --new <...> [-o report-dir] [--no-build] [--refs <dir>]... <dll|dir|@list>...");
 	return 1;
 }
 reportDir ??= "decompdiff-report";
@@ -133,8 +138,8 @@ Directory.CreateDirectory(reportDir);
 Side oldSide, newSide;
 try
 {
-	oldSide = Side.Create("old", oldSpec, forceBuild);
-	newSide = Side.Create("new", newSpec, forceBuild);
+	oldSide = Side.Create("old", oldSpec, skipBuild);
+	newSide = Side.Create("new", newSpec, skipBuild);
 }
 catch (ArgumentException ex)
 {
@@ -357,6 +362,12 @@ sealed class RefIndex
 			?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".nuget", "packages");
 		if (Directory.Exists(nugetRoot))
 			probeRoots.Add(nugetRoot);
+		// nugetfuzz's package cache uses the same <id>/<version>/lib/<tfm> layout and holds the
+		// dependency closure of everything it downloaded. It is the usual source of the corpus,
+		// so its packages are exactly the ones a corpus assembly's own references point at.
+		var fuzzCache = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache", "nugetfuzz");
+		if (Directory.Exists(fuzzCache))
+			probeRoots.Add(fuzzCache);
 		Description = $"{byName.Count} assemblies indexed"
 			+ (probeRoots.Count > 0 ? $", NuGet cache probe at {string.Join(", ", probeRoots)}" : "");
 	}
@@ -528,12 +539,14 @@ sealed class RefIndex
 		Link(dll, dir);
 		var missing = new List<string>();
 		var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-		var queue = new Queue<string>();
+		// The flag records whether a name was reached through a reference assembly, which
+		// decides whether its absence is worth reporting.
+		var queue = new Queue<(string Name, bool ViaRefPack)>();
 		foreach (var name in ReferencesOf(dll))
-			queue.Enqueue(name);
+			queue.Enqueue((name, false));
 		while (queue.Count > 0)
 		{
-			var name = queue.Dequeue();
+			var (name, viaRefPack) = queue.Dequeue();
 			if (!seen.Add(name))
 				continue;
 			var staged = Path.Combine(dir, name + ".dll");
@@ -542,15 +555,21 @@ sealed class RefIndex
 				var found = refs.Find(name, frameworkIndex);
 				if (found == null)
 				{
-					missing.Add(name);
+					// Reference assemblies name GAC-only internals - SMDiagnostics and
+					// System.ServiceModel.Internals are referenced from twenty .NET Framework
+					// ref assemblies and ship in no pack and no package. Nothing can supply
+					// them, so listing them as coverable by --refs is a false lead.
+					if (!viaRefPack)
+						missing.Add(name);
 					continue;
 				}
 				Link(found, dir);
 			}
 			// A staged reference brings its own references along: the type system follows
 			// base types and type-forwards across the whole closure, not just one hop.
+			var transitiveViaRefPack = viaRefPack || frameworkIndex.ContainsKey(name);
 			foreach (var transitive in ReferencesOf(staged))
-				queue.Enqueue(transitive);
+				queue.Enqueue((transitive, transitiveViaRefPack));
 		}
 		missing.Sort(StringComparer.OrdinalIgnoreCase);
 		return (Path.Combine(dir, Path.GetFileName(dll)), missing);
@@ -670,6 +689,7 @@ static class Report
 			ins { background:var(--add); color:var(--addfg); text-decoration:none; display:block; }
 			del { background:var(--del); color:var(--delfg); text-decoration:none; display:block; }
 			span.ctx { display:block; color:var(--muted); }
+			span.hunk { display:block; color:var(--muted); opacity:0.7; }
 			#filter { width:100%; padding:8px; margin:8px 0; border:1px solid var(--line); border-radius:6px;
 			          background:var(--bg); color:var(--fg); font:13px ui-monospace,monospace; }
 			ul { padding-left:20px; } li { font-family:ui-monospace,monospace; font-size:12.5px; }
@@ -695,12 +715,10 @@ static class Report
 			foreach (var c in m.Changed.OrderByDescending(c => Math.Abs(c.New.Lines - c.Old.Lines)))
 			{
 				var file = SanitizeFileName(c.Location.Replace(" / ", "/")) + ".cs";
-				var oldCode = ReadIfExists(Path.Combine(m.ReportDir, "old", file));
-				var newCode = ReadIfExists(Path.Combine(m.ReportDir, "new", file));
 				var delta = c.New.Lines - c.Old.Lines;
 				html.AppendLine($"<details><summary>{Esc(c.Location)} "
 					+ $"<span class=meta>({c.Old.Lines} &rarr; {c.New.Lines} lines, {delta:+#;-#;0})</span></summary>");
-				html.AppendLine($"<pre>{Diff(oldCode, newCode)}</pre></details>");
+				html.AppendLine($"<pre>{Diff(Path.Combine(m.ReportDir, "old", file), Path.Combine(m.ReportDir, "new", file))}</pre></details>");
 			}
 			html.AppendLine("""
 				<script>
@@ -738,80 +756,52 @@ static class Report
 		return $"<tr><td>{Esc(name)}</td><td>{o}</td><td>{n}</td><td{cls}>{delta:+#;-#;0}</td></tr>";
 	}
 
-	static string ReadIfExists(string path) => File.Exists(path) ? File.ReadAllText(path) : "";
-
-	// Line diff: common prefix/suffix are cheap to strip and usually account for nearly
-	// everything, leaving a middle small enough for an O(n*m) LCS. Beyond the cap the
-	// middle is shown as a plain replacement rather than spending minutes on alignment.
-	const int LcsCap = 1500;
-
-	static string Diff(string oldCode, string newCode)
+	// Delegates the actual line diffing to `git diff --no-index`: it has a real
+	// Myers/patience implementation with move detection and heuristics tuned over two
+	// decades, which a hand-rolled LCS here could never match - and its -U3 context
+	// windowing is exactly what the previous prefix/suffix trimming was trying to fake.
+	// Both files were already written to disk by DumpPair, so they are diffed in place.
+	static string Diff(string oldFile, string newFile)
 	{
-		var a = oldCode.ReplaceLineEndings("\n").Split('\n');
-		var b = newCode.ReplaceLineEndings("\n").Split('\n');
-		int start = 0;
-		while (start < a.Length && start < b.Length && a[start] == b[start])
-			start++;
-		int endA = a.Length, endB = b.Length;
-		while (endA > start && endB > start && a[endA - 1] == b[endB - 1])
-		{
-			endA--;
-			endB--;
-		}
-		var sb = new StringBuilder();
-		// A few lines of context on each side make the hunk readable on its own.
-		for (int i = Math.Max(0, start - 3); i < start; i++)
-			sb.Append("<span class=ctx>").Append(Esc(a[i])).Append("</span>");
-		int lenA = endA - start, lenB = endB - start;
-		if (lenA <= LcsCap && lenB <= LcsCap)
-		{
-			foreach (var (tag, line) in LcsDiff(a[start..endA], b[start..endB]))
-				sb.Append(tag switch { '+' => "<ins>", '-' => "<del>", _ => "<span class=ctx>" })
-					.Append(Esc(line))
-					.Append(tag switch { '+' => "</ins>", '-' => "</del>", _ => "</span>" });
-		}
-		else
-		{
-			for (int i = start; i < endA; i++)
-				sb.Append("<del>").Append(Esc(a[i])).Append("</del>");
-			for (int i = start; i < endB; i++)
-				sb.Append("<ins>").Append(Esc(b[i])).Append("</ins>");
-		}
-		for (int i = endA; i < Math.Min(a.Length, endA + 3); i++)
-			sb.Append("<span class=ctx>").Append(Esc(a[i])).Append("</span>");
-		return sb.ToString();
+		var psi = new ProcessStartInfo("git") {
+			RedirectStandardOutput = true,
+			RedirectStandardError = true,
+		};
+		foreach (var arg in new[] { "diff", "--no-index", "--no-color", "-U3", "--", ExistingOrNullDevice(oldFile), ExistingOrNullDevice(newFile) })
+			psi.ArgumentList.Add(arg);
+		using var p = Process.Start(psi)!;
+		var output = p.StandardOutput.ReadToEnd();
+		p.WaitForExit();
+		// exit code 1 just means differences were found; anything else is a real failure.
+		return p.ExitCode is 0 or 1 ? RenderUnifiedDiff(output) : Esc(p.StandardError.ReadToEnd());
 	}
 
-	static List<(char Tag, string Line)> LcsDiff(string[] a, string[] b)
+	// A changed type is only ever missing one side's file when it appeared/disappeared
+	// entirely, which DumpPair never does for a "changed" entry - kept defensive anyway.
+	static string ExistingOrNullDevice(string path)
+		=> File.Exists(path) ? path : (OperatingSystem.IsWindows() ? "NUL" : "/dev/null");
+
+	// Renders a unified diff body (as produced by `git diff`) as HTML, skipping the
+	// file-header lines (diff/index/---/+++) which name the throwaway temp files.
+	static string RenderUnifiedDiff(string unifiedDiff)
 	{
-		var lcs = new int[a.Length + 1, b.Length + 1];
-		for (int i = a.Length - 1; i >= 0; i--)
-			for (int j = b.Length - 1; j >= 0; j--)
-				lcs[i, j] = a[i] == b[j] ? lcs[i + 1, j + 1] + 1 : Math.Max(lcs[i + 1, j], lcs[i, j + 1]);
-		var result = new List<(char, string)>();
-		int x = 0, y = 0;
-		while (x < a.Length && y < b.Length)
+		var sb = new StringBuilder();
+		foreach (var line in unifiedDiff.ReplaceLineEndings("\n").Split('\n'))
 		{
-			if (a[x] == b[y])
+			if (line.Length == 0 || line.StartsWith("diff --git") || line.StartsWith("index ")
+				|| line.StartsWith("--- ") || line.StartsWith("+++ ") || line.StartsWith("\\ No newline"))
+				continue;
+			if (line.StartsWith("@@"))
 			{
-				result.Add((' ', a[x]));
-				x++;
-				y++;
+				sb.Append("<span class=hunk>").Append(Esc(line)).Append("</span>");
+				continue;
 			}
-			else if (lcs[x + 1, y] >= lcs[x, y + 1])
-			{
-				result.Add(('-', a[x++]));
-			}
-			else
-			{
-				result.Add(('+', b[y++]));
-			}
+			var tag = line[0];
+			sb.Append(tag switch { '+' => "<ins>", '-' => "<del>", _ => "<span class=ctx>" })
+				.Append(Esc(line[1..]))
+				.Append(tag switch { '+' => "</ins>", '-' => "</del>", _ => "</span>" });
 		}
-		while (x < a.Length)
-			result.Add(('-', a[x++]));
-		while (y < b.Length)
-			result.Add(('+', b[y++]));
-		return result;
+		return sb.ToString();
 	}
 
 	static string Esc(string s) => s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
@@ -867,7 +857,7 @@ class Side
 		Description = description;
 	}
 
-	public static Side Create(string name, string spec, bool forceBuild)
+	public static Side Create(string name, string spec, bool skipBuild)
 	{
 		string dllPath;
 		string description;
@@ -879,8 +869,8 @@ class Side
 		else if (Directory.Exists(spec))
 		{
 			var checkout = Path.GetFullPath(spec);
-			dllPath = BuildCheckout(checkout, forceBuild);
-			// The dll timestamp exposes stale pre-existing builds; --build forces a fresh one.
+			dllPath = BuildCheckout(checkout, skipBuild);
+			// The dll timestamp is in the header so a --no-build run says what it measured.
 			description = $"{checkout} ({GitDescribe(checkout)}, dll of {File.GetLastWriteTime(dllPath):yyyy-MM-dd HH:mm})";
 		}
 		else if (TryResolveCommit(spec, out var commit, out var repoRoot))
@@ -889,7 +879,7 @@ class Side
 			// The worktree is keyed by commit and kept: reusing it reuses the Release build
 			// already sitting in its bin/, which is what dominates the runtime of a rerun.
 			var checkout = EnsureWorktree(repoRoot, commit);
-			dllPath = BuildCheckout(checkout, forceBuild);
+			dllPath = BuildCheckout(checkout, skipBuild);
 			description = $"{spec} ({commit[..9]}, dll of {File.GetLastWriteTime(dllPath):yyyy-MM-dd HH:mm})";
 		}
 		else
@@ -901,7 +891,7 @@ class Side
 		return new Side(alc.LoadFromAssemblyPath(dllPath), description);
 	}
 
-	static string BuildCheckout(string checkout, bool forceBuild)
+	static string BuildCheckout(string checkout, bool skipBuild)
 	{
 		var csproj = Path.Combine(checkout, "ICSharpCode.Decompiler", "ICSharpCode.Decompiler.csproj");
 		if (!File.Exists(csproj))
@@ -911,8 +901,13 @@ class Side
 			? Directory.EnumerateFiles(binDir, "ICSharpCode.Decompiler.dll", SearchOption.AllDirectories)
 				.OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault()
 			: null;
-		if (existing != null && !forceBuild)
+		if (existing != null && skipBuild)
+		{
+			Console.Error.WriteLine($"  warning: --no-build, reusing {existing}");
+			Console.Error.WriteLine($"  warning: built {File.GetLastWriteTime(existing):yyyy-MM-dd HH:mm} - if that predates the checkout's"
+				+ " last change, the diff describes code neither side is on");
 			return existing;
+		}
 		// A bare restore would prune the repo's packages.lock.json files; keep them whole.
 		Run("dotnet", $"restore \"{csproj}\" -p:RestoreEnablePackagePruning=false");
 		Run("dotnet", $"build \"{csproj}\" -c Release --no-restore");

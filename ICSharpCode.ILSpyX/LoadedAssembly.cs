@@ -578,7 +578,7 @@ namespace ICSharpCode.ILSpyX
 			return debugInfoProvider;
 		}
 
-		sealed class MyAssemblyResolver : IAssemblyResolver
+		sealed class MyAssemblyResolver : IAssemblyResolver, IReferenceLoadInfoProvider
 		{
 			readonly LoadedAssembly parent;
 			readonly bool loadOnDemand;
@@ -607,6 +607,18 @@ namespace ICSharpCode.ILSpyX
 				// in previous Resolve() calls; but we don't want to wait for those to be loaded.
 				this.tfmTask = parent.GetTargetFrameworkIdAsync();
 				this.referenceLoadInfo = parent.LoadedAssemblyReferencesInfo;
+			}
+
+			/// <summary>
+			/// The log the resolution messages go to, so the type system can report the forwarder
+			/// chains it cannot follow to the same place.
+			/// </summary>
+			public ReferenceLoadInfo LoadInfo => referenceLoadInfo;
+
+			/// <inheritdoc/>
+			public IDisposable? BeginSnapshot()
+			{
+				return parent.GetUniversalResolver(applyWinRTProjections).BeginSnapshot();
 			}
 
 			public MetadataFile? Resolve(IAssemblyReference reference)

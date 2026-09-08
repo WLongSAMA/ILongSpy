@@ -73,15 +73,5 @@ namespace ICSharpCode.Decompiler.TypeSystem
 			else
 				return nullableType;
 		}
-
-		/// <summary>
-		/// Creates a nullable type reference.
-		/// </summary>
-		public static ParameterizedTypeReference Create(ITypeReference elementType)
-		{
-			if (elementType == null)
-				throw new ArgumentNullException(nameof(elementType));
-			return new ParameterizedTypeReference(KnownTypeReference.Get(KnownTypeCode.NullableOfT), new[] { elementType });
-		}
 	}
 }

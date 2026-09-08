@@ -20,6 +20,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection.Metadata;
@@ -151,6 +152,7 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 
 		// per-run members
 		HashSet<string> directories = new HashSet<string>(Platform.FileNameComparer);
+		readonly Dictionary<string, int> resourceFileNames = new Dictionary<string, int>(Platform.FileNameComparer);
 		readonly List<DecompilerException> errors = new List<DecompilerException>();
 		readonly IProjectFileWriter projectWriter;
 
@@ -256,6 +258,7 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 			{
 				TargetDirectory = targetDirectory;
 				directories.Clear();
+				resourceFileNames.Clear();
 				errors.Clear();
 				var resources = RecordingErrors(WriteResourceFilesInProject(file), file, "resource files").ToList();
 				resourceFileCount = resources.Count;
@@ -384,23 +387,26 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 
 			string GetFileFileNameForHandle(TypeDefinitionHandle h)
 			{
-				var type = metadata.GetTypeDefinition(h);
-				string file = CleanUpFileName(metadata.GetString(type.Name), ".cs");
-				string ns = metadata.GetString(type.Namespace);
-				if (string.IsNullOrEmpty(ns))
+				// A code-behind class belongs to the document it completes: WPF tooling expects
+				// MainWindow.xaml.cs beside MainWindow.xaml, and treats a stray MainWindow.cs
+				// elsewhere in the tree as an unrelated file.
+				foreach (var partialType in partialTypes)
 				{
-					return file;
-				}
-				else
-				{
-					string dir = Settings.UseNestedDirectoriesForNamespaces ? CleanUpPath(ns) : CleanUpDirectoryName(ns);
-					if (directories.Add(dir))
+					if (partialType.DeclaringTypeDefinitionHandle == h && partialType.CompanionFileName != null)
 					{
-						var path = Path.Combine(TargetDirectory, dir);
-						CreateDirectory(path);
+						string companionDirectory = Path.GetDirectoryName(partialType.CompanionFileName)!;
+						if (!string.IsNullOrEmpty(companionDirectory) && directories.Add(companionDirectory))
+							CreateDirectory(Path.Combine(TargetDirectory, companionDirectory));
+						return partialType.CompanionFileName + ".cs";
 					}
-					return Path.Combine(dir, file);
 				}
+
+				var type = metadata.GetTypeDefinition(h);
+				string fileName = GetFileNameForType(metadata.GetString(type.Namespace), metadata.GetString(type.Name), ".cs");
+				string directory = Path.GetDirectoryName(fileName)!;
+				if (!string.IsNullOrEmpty(directory) && directories.Add(directory))
+					CreateDirectory(Path.Combine(TargetDirectory, directory));
+				return fileName;
 			}
 
 			void ProcessFiles(List<IGrouping<string, TypeDefinitionHandle>> files)
@@ -506,7 +512,7 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 				List<ProjectItemInfo> items;
 				try
 				{
-					items = WriteResourceFileInProject(r).ToList();
+					items = WriteResourceFileInProject(module, r).ToList();
 				}
 				catch (Exception ex) when (!(ex is OperationCanceledException))
 				{
@@ -522,7 +528,7 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 			}
 		}
 
-		IEnumerable<ProjectItemInfo> WriteResourceFileInProject(Resource r)
+		IEnumerable<ProjectItemInfo> WriteResourceFileInProject(MetadataFile module, Resource r)
 		{
 			Stream? stream = r.TryOpenStream();
 			if (stream == null)
@@ -539,18 +545,35 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 					var resourcesFile = new ResourcesFile(stream);
 					if (resourcesFile.AllEntriesAreStreams())
 					{
+						bool entryNamesAreEscaped = IsWpfGeneratedResourceContainer(r.Name);
 						foreach (var (name, value) in resourcesFile)
 						{
-							string fileName = SanitizeFileName(name);
+							string fileName = ReserveResourceFileName(SanitizeFileName(entryNamesAreEscaped ? Uri.UnescapeDataString(name) : name));
 							string? dirName = Path.GetDirectoryName(fileName);
-							if (!string.IsNullOrEmpty(dirName) && directories.Add(dirName))
-							{
-								CreateDirectory(Path.Combine(TargetDirectory, dirName));
-							}
 							Stream entryStream = (Stream)value!;
 							entryStream.Position = 0;
-							individualResources.AddRange(
-								WriteResourceToFile(fileName, name, entryStream));
+							try
+							{
+								// Inside the recovery, because an entry named after a directory another
+								// entry needs makes this throw, and that must cost the one entry rather
+								// than every entry left in the container.
+								if (!string.IsNullOrEmpty(dirName) && !directories.Contains(dirName))
+								{
+									CreateDirectory(Path.Combine(TargetDirectory, dirName));
+									directories.Add(dirName);
+								}
+								foreach (var item in WriteResourceToFile(fileName, name, entryStream))
+								{
+									individualResources.Add(entryNamesAreEscaped ? ToWpfProjectItem(item, name) : item);
+								}
+							}
+							catch (Exception ex) when (!(ex is OperationCanceledException))
+							{
+								// One entry nobody can decode - a BAML stream carrying characters XML
+								// cannot represent, say - costs that entry, not every other entry
+								// sharing the container with it.
+								RecordError(ex as DecompilerException ?? new DecompilerException(module, $"Error writing resource '{name}'", ex));
+							}
 						}
 						decodedIntoIndividualFiles = true;
 					}
@@ -577,7 +600,7 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 				else
 				{
 					stream.Position = 0;
-					string fileName = GetFileNameForResource(r.Name);
+					string fileName = ReserveResourceFileName(GetFileNameForResource(r.Name));
 					foreach (var entry in WriteResourceToFile(fileName, r.Name, stream))
 					{
 						yield return entry;
@@ -586,7 +609,7 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 			}
 			else
 			{
-				string fileName = GetFileNameForResource(r.Name);
+				string fileName = ReserveResourceFileName(GetFileNameForResource(r.Name));
 				using (FileStream fs = new FileStream(Path.Combine(TargetDirectory, fileName), FileMode.Create, FileAccess.Write))
 				{
 					stream.Position = 0;
@@ -627,6 +650,104 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 				entryStream.CopyTo(fs);
 			}
 			return new[] { new ProjectItemInfo("EmbeddedResource", fileName).With("LogicalName", resourceName) };
+		}
+
+		/// <summary>
+		/// Adjusts a project item produced from an entry of a WPF-generated ".g.resources" container
+		/// so that rebuilding the exported project puts the entry back under its original resource
+		/// ID. The file on disk cannot carry that ID - it is sanitized, and the ID is escaped - so
+		/// the item pins it with a LogicalName holding the decoded name: the WPF build tasks
+		/// lower-case and escape the LogicalName again, arriving back at the original ID. Entries
+		/// that no handler turned into some other item type are WPF Resource items; leaving them as
+		/// EmbeddedResource would rebuild them into a manifest resource of their own instead of
+		/// putting them into ".g.resources".
+		/// </summary>
+		static ProjectItemInfo ToWpfProjectItem(ProjectItemInfo item, string escapedEntryName)
+		{
+			string logicalName = Uri.UnescapeDataString(escapedEntryName);
+			if (item.FileName.EndsWith(".xaml", StringComparison.OrdinalIgnoreCase))
+			{
+				// A decompiled BAML page is written as .xaml, and the build derives the .baml
+				// extension of the resource ID from the Page item type, not from the LogicalName.
+				logicalName = Path.ChangeExtension(logicalName, ".xaml");
+			}
+			var result = item with {
+				ItemType = item.ItemType == "EmbeddedResource" ? "Resource" : item.ItemType
+			};
+			result.AdditionalProperties ??= new Dictionary<string, string>();
+			result.AdditionalProperties["LogicalName"] = logicalName;
+			return result;
+		}
+
+		/// <summary>
+		/// Claims <paramref name="fileName"/> for one resource, appending "_2", "_3", ... until the
+		/// name is free. Sanitizing is not injective - "a+b/logo.png" and "a&amp;b/logo.png" both come out
+		/// as "a-b/logo.png" - and the writers create files with FileMode.Create, so without this the
+		/// entries after the first are lost silently, and an assembly can be built to make that happen
+		/// to as many of them as it likes. The exported project keeps the true name in the item's
+		/// LogicalName, so the file on disk only has to be unique, not faithful.
+		/// </summary>
+		string ReserveResourceFileName(string fileName)
+		{
+			if (!resourceFileNames.TryGetValue(fileName, out int lastSuffix))
+			{
+				resourceFileNames.Add(fileName, 1);
+				return fileName;
+			}
+			// Resuming the count where the last collision on this name left off keeps the export
+			// linear in the number of colliding entries; restarting at 2 each time would make it
+			// quadratic, which is worth something when the count is the assembly's to choose.
+			string candidate;
+			do
+			{
+				candidate = AppendFileNameSuffix(fileName, ++lastSuffix);
+			}
+			while (resourceFileNames.ContainsKey(candidate));
+			resourceFileNames[fileName] = lastSuffix;
+			resourceFileNames.Add(candidate, 1);
+			return candidate;
+		}
+
+		/// <summary>
+		/// Inserts "_<paramref name="suffix"/>" before the extension, trimming the name if the segment
+		/// would otherwise outgrow what the file system takes - a name already at the limit is an
+		/// ordinary thing to find in an assembly, and the write would throw.
+		/// </summary>
+		static string AppendFileNameSuffix(string fileName, int suffix)
+		{
+			string directory = Path.GetDirectoryName(fileName) ?? string.Empty;
+			string name = Path.GetFileNameWithoutExtension(fileName);
+			string extension = Path.GetExtension(fileName);
+			string marker = "_" + suffix.ToString(CultureInfo.InvariantCulture);
+			// Trimming whole characters removes at least as many bytes as it has to, so measuring the
+			// overflow the way CleanUpName measures a segment cannot leave the result over the limit.
+			int overflow = SegmentLength(name) + SegmentLength(marker) + SegmentLength(extension) - maxSegmentLength;
+			if (overflow > 0)
+				name = name.Substring(0, Math.Max(0, name.Length - overflow));
+			return Path.Combine(directory, name + marker + extension);
+		}
+
+		static int SegmentLength(string text)
+		{
+			return RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? text.Length : Encoding.UTF8.GetByteCount(text);
+		}
+
+		/// <summary>
+		/// WPF's build tasks put every Page and Resource item into "&lt;AssemblyName&gt;.g.resources"
+		/// (and into "&lt;AssemblyName&gt;.g.&lt;culture&gt;.resources" in satellite assemblies), keyed by
+		/// the item's relative path, lower-cased and URI-escaped: a folder named "My Images" becomes
+		/// "my%20images". Those escapes are not part of the name and have to be decoded before the
+		/// name is turned into a file name, otherwise the percent sign is sanitized away and
+		/// "my%20images/logo.png" lands in a directory called "my-20images".
+		/// </summary>
+		static bool IsWpfGeneratedResourceContainer(string resourceName)
+		{
+			const string extension = ".resources";
+			if (!resourceName.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
+				return false;
+			string name = resourceName.Substring(0, resourceName.Length - extension.Length);
+			return name.EndsWith(".g", StringComparison.OrdinalIgnoreCase)
+				|| name.Substring(0, Math.Max(0, name.LastIndexOf('.'))).EndsWith(".g", StringComparison.OrdinalIgnoreCase);
 		}
 
 		string GetFileNameForResource(string fullName)
@@ -854,6 +975,30 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 		/// Removes invalid characters from file names and reduces their length,
 		/// but keeps file extensions and path structure intact.
 		/// </summary>
+		/// <summary>
+		/// The path of a file belonging to a type: the namespace becomes directories or one
+		/// flattened directory name, depending on
+		/// <see cref="DecompilerSettings.UseNestedDirectoriesForNamespaces"/>. Everything a type
+		/// owns - its C# file and the XAML document it is the code-behind of - goes here, so the
+		/// two end up next to each other.
+		/// </summary>
+		public static string GetFileNameForType(string @namespace, string typeName, string extension,
+			bool useNestedDirectoriesForNamespaces)
+		{
+			string file = CleanUpFileName(typeName, extension);
+			if (string.IsNullOrEmpty(@namespace))
+				return file;
+			string directory = useNestedDirectoriesForNamespaces
+				? CleanUpPath(@namespace)
+				: CleanUpDirectoryName(@namespace);
+			return Path.Combine(directory, file);
+		}
+
+		protected string GetFileNameForType(string @namespace, string typeName, string extension)
+		{
+			return GetFileNameForType(@namespace, typeName, extension, Settings.UseNestedDirectoriesForNamespaces);
+		}
+
 		public static string SanitizeFileName(string fileName)
 		{
 			return CleanUpName(fileName, separateAtDots: false, treatAsFileName: true, treatAsPath: true);
@@ -1058,6 +1203,27 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 		public static bool CanUseSdkStyleProjectFormat(MetadataFile module)
 		{
 			return TargetServices.DetectTargetFramework(module).Moniker != null;
+		}
+
+		/// <summary>
+		/// Determines whether the XAML file whose root object is <paramref name="rootType"/> belongs
+		/// into an MSBuild &lt;ApplicationDefinition&gt; item instead of a &lt;Page&gt; item.
+		/// The WPF markup compiler generates the program entry point from the application definition,
+		/// so a module that has no entry point of its own - a library that happens to contain an
+		/// <c>Application</c> subclass - must not get one.
+		/// </summary>
+		public static bool IsApplicationDefinition(ITypeDefinition? rootType, MetadataFile? module)
+		{
+			if (rootType == null)
+				return false;
+			if (module is not PEFile { Reader.PEHeaders.CorHeader.EntryPointTokenOrRelativeVirtualAddress: not 0 })
+				return false;
+			foreach (var baseType in rootType.GetNonInterfaceBaseTypes())
+			{
+				if (baseType.FullName == "System.Windows.Application")
+					return true;
+			}
+			return false;
 		}
 	}
 

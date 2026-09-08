@@ -40,10 +40,13 @@ namespace ICSharpCode.BamlDecompiler
 	{
 		static readonly IRewritePass[] rewritePasses = new IRewritePass[] {
 			new XClassRewritePass(),
+			// After the x:Class pass, which is what establishes the type of the document.
+			new StartupUriRewritePass(),
 			new MarkupExtensionRewritePass(),
 			new AttributeRewritePass(),
 			new ConnectionIdRewritePass(),
 			new DocumentRewritePass(),
+			new EscapeInvalidXmlCharactersRewritePass(),
 		};
 
 		private BamlDecompilerTypeSystem typeSystem;

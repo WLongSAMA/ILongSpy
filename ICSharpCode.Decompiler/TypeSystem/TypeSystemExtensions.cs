@@ -310,8 +310,8 @@ namespace ICSharpCode.Decompiler.TypeSystem
 					case KnownTypeCode.IntPtr:
 					case KnownTypeCode.UIntPtr:
 					case KnownTypeCode.TypedReference:
-						//case KnownTypeCode.ArgIterator:
-						//case KnownTypeCode.RuntimeArgumentHandle:
+					//case KnownTypeCode.ArgIterator:
+					case KnownTypeCode.RuntimeArgumentHandle:
 						return true;
 				}
 				if (type.Kind == TypeKind.Struct)
@@ -497,19 +497,6 @@ namespace ICSharpCode.Decompiler.TypeSystem
 		{
 			return compilation.Modules.SelectMany(a => a.TopLevelTypeDefinitions);
 		}
-		#endregion
-
-		#region Resolve on collections
-		public static IReadOnlyList<IType> Resolve(this IList<ITypeReference> typeReferences, ITypeResolveContext context)
-		{
-			if (typeReferences == null)
-				throw new ArgumentNullException(nameof(typeReferences));
-			if (typeReferences.Count == 0)
-				return EmptyList<IType>.Instance;
-			else
-				return new ProjectedList<ITypeResolveContext, ITypeReference, IType>(context, typeReferences, (c, t) => t.Resolve(c));
-		}
-
 		#endregion
 
 		#region IAssembly.GetTypeDefinition()

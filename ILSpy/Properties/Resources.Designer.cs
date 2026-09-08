@@ -1362,6 +1362,15 @@ namespace ICSharpCode.ILSpy.Properties {
         }
         
         /// <summary>
+        ///   Looks up a localized string similar to &apos;params&apos; and optional parameters in lambdas.
+        /// </summary>
+        public static string DecompilerSettings_LambdaOptionalAndParamsParameters {
+            get {
+                return ResourceManager.GetString("DecompilerSettings.LambdaOptionalAndParamsParameters", resourceCulture);
+            }
+        }
+
+        /// <summary>
         ///   Looks up a localized string similar to Use nint/nuint types.
         /// </summary>
         public static string DecompilerSettings_NativeIntegers {
@@ -2413,6 +2422,15 @@ namespace ICSharpCode.ILSpy.Properties {
         public static string NETFrameworkVersion {
             get {
                 return ResourceManager.GetString("NETFrameworkVersion", resourceCulture);
+            }
+        }
+        
+        /// <summary>
+        ///   Looks up a localized string similar to Could not find &apos;{0}&apos; in the assemblies that were opened:.
+        /// </summary>
+        public static string NavigationTargetNotFound {
+            get {
+                return ResourceManager.GetString("NavigationTargetNotFound", resourceCulture);
             }
         }
         

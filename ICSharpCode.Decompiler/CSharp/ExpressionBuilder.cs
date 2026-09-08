@@ -331,25 +331,10 @@ namespace ICSharpCode.Decompiler.CSharp
 				return eventReference.WithRR(eventResolveResult);
 			}
 
-			if (settings.FieldKeyword
-				&& decompilationContext.CurrentMember is IProperty accessedProperty
-				&& accessedProperty.Parameters.Count == 0
-				// Ask exactly the question PatternStatementTransform asks when it decides whether
-				// the field declaration can go away. A looser test here prints `field` inside a
-				// property whose declaration then keeps explicit accessors and its field: on
-				// recompile the keyword binds to a freshly synthesized backing field while the
-				// original one stays declared and unwritten - silently different storage.
-				&& PatternStatementTransform.TryGetBackingField(accessedProperty, out var backingField)
-				&& field.MemberDefinition.Equals(backingField.MemberDefinition)
-				// Only THIS instance's field is the `field` keyword. IL can load another
-				// instance's backing field inside an accessor (weavers, obfuscators, hand-written
-				// IL); rendering that as `field` would redirect the access, and drop whatever
-				// side effect producing the target had.
-				&& (field.IsStatic || TargetIsThis(targetInstruction)))
+			if (CanUseFieldKeyword())
 			{
-				// Inside its own property's get/set/init accessor (including nested lambdas and
-				// local functions), the backing field is the C# 14 "field" keyword. It must stay
-				// unqualified: "this.field" would refer to a real member named "field".
+				// The keyword must stay unqualified: "this.field" would refer to a real member
+				// named "field".
 				return new IdentifierExpression("field")
 					.WithRR(new MemberResolveResult(null, field));
 			}
@@ -441,6 +426,38 @@ namespace ICSharpCode.Decompiler.CSharp
 			}
 
 			return expr;
+
+			// Whether this access may be rendered as the C# 14 "field" keyword: it has to be the
+			// backing field of the property whose accessor is being decompiled, read off this
+			// instance, in a property the declaration can actually disappear from. Nested lambdas
+			// and local functions inside the accessor count as being inside it.
+			bool CanUseFieldKeyword()
+			{
+				if (!settings.FieldKeyword)
+					return false;
+				if (decompilationContext.CurrentMember is not IProperty property || property.Parameters.Count != 0)
+					return false;
+				// With GetterOnlyAutomaticProperties off, a setter-less property keeps its backing
+				// field declared (CSharpDecompiler.MemberIsHidden) and PatternStatementTransform
+				// leaves the property alone, so the keyword would land next to the declaration it
+				// is supposed to replace.
+				if (!property.CanSet && !settings.GetterOnlyAutomaticProperties)
+					return false;
+				// Exactly the question PatternStatementTransform asks before removing the
+				// declaration. A looser test prints "field" in a property that then keeps its
+				// field: on recompile the keyword binds to a freshly synthesized backing field
+				// while the original stays declared and unwritten - silently different storage.
+				if (!PatternStatementTransform.TryGetBackingField(property, out var backingField)
+					|| !field.MemberDefinition.Equals(backingField.MemberDefinition))
+				{
+					return false;
+				}
+				// Only THIS instance's field is the keyword. IL can load another instance's backing
+				// field inside an accessor (weavers, obfuscators, hand-written IL); rendering that
+				// as "field" would redirect the access and drop whatever side effect produced the
+				// target.
+				return field.IsStatic || TargetIsThis(targetInstruction);
+			}
 		}
 
 		// References to an automatic event's backing field are printed as the event. Gated on
@@ -786,7 +803,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				.WithRR(new TypeOfResolveResult(compilation.FindType(KnownTypeCode.Type), inst.Type));
 			return new MemberReferenceExpression(typeofExpr, "TypeHandle")
 				.WithILInstruction(inst)
-				.WithRR(new TypeOfResolveResult(compilation.FindType(new TopLevelTypeName("System", "RuntimeTypeHandle")), inst.Type));
+				.WithRR(new TypeOfResolveResult(compilation.FindType(KnownTypeCode.RuntimeTypeHandle), inst.Type));
 		}
 
 		protected internal override TranslatedExpression VisitBitNot(BitNot inst, TranslationContext context)
@@ -2610,7 +2627,6 @@ namespace ICSharpCode.Decompiler.CSharp
 				let v = ident.GetILVariable()
 				where v != null && v.Function == function && v.Kind == VariableKind.Parameter
 				select ident).Any();
-
 			bool isLambda = false;
 			if (ame.Parameters.Any(p => p.Type is null))
 			{
@@ -2632,6 +2648,33 @@ namespace ICSharpCode.Decompiler.CSharp
 				// to name or type from nothing to keep. The parameter-list-less "delegate {}"
 				// form is compatible with any delegate signature, so it is always legal there.
 				isLambda = true;
+			}
+			// 'params' and parameter default values are only legal on the explicitly typed
+			// parameter list of a lambda, and only since C# 12; and a list that is about to be
+			// dropped cannot carry them at all. Everywhere else they are decorative - the
+			// delegate type still declares both, and that is what call sites bind against.
+			if (settings.LambdaOptionalAndParamsParameters
+				&& (isLambda || parametersAreUsed)
+				&& ame.Parameters.All(p => p.Type is not null))
+			{
+				// Only what the anonymous function's own metadata declares is written. A lambda
+				// may state a different default than its target delegate, or none where the
+				// delegate has one, and reflection over the lambda's method reports what the
+				// lambda declared - so taking either from the delegate's Invoke would change
+				// what the recompiled assembly says. The delegate type keeps declaring both,
+				// and call sites bind against it, so nothing is lost by leaving them out here.
+
+				// An anonymous method cannot declare either, in any language version.
+				if (ame.Parameters.Any(p => p.IsParams || p.DefaultExpression is not null))
+					isLambda = true;
+			}
+			else
+			{
+				foreach (var p in ame.Parameters)
+				{
+					p.IsParams = false;
+					p.DefaultExpression?.Detach();
+				}
 			}
 			// Remove the parameter list from an AnonymousMethodExpression if the parameters are not used in the method body
 			if (!isLambda && !parametersAreUsed)
@@ -2880,7 +2923,18 @@ namespace ICSharpCode.Decompiler.CSharp
 				else
 				{
 					IType targetTypeHint = constrainedTo ?? memberDeclaringType;
-					if (CallInstruction.ExpectedTypeForThisPointer(memberDeclaringType, constrainedTo) == StackType.Ref)
+					if (target is Conv {
+						Kind: ConversionKind.Invalid,
+						InputType: StackType.Ref,
+						TargetType: IL.PrimitiveType.Unknown
+					} && targetTypeHint.Kind == TypeKind.Unknown)
+					{
+						target = target.UnwrapConv(ConversionKind.Invalid);
+					}
+					StackType expectedThisPointerType = CallInstruction.ExpectedTypeForThisPointer(memberDeclaringType, constrainedTo);
+					bool requiresManagedReference = expectedThisPointerType == StackType.Ref
+						|| (expectedThisPointerType == StackType.Unknown && target.ResultType == StackType.Ref);
+					if (requiresManagedReference)
 					{
 						if (target.ResultType == StackType.Ref)
 						{
@@ -2892,13 +2946,15 @@ namespace ICSharpCode.Decompiler.CSharp
 						}
 					}
 					var translatedTarget = Translate(target, targetTypeHint);
-					if (CallInstruction.ExpectedTypeForThisPointer(memberDeclaringType, constrainedTo) == StackType.Ref)
+					if (requiresManagedReference)
 					{
 						// When accessing members on value types, ensure we use a reference of the correct type,
 						// and not a pointer or a reference to a different type (issue #1333)
-						if (!(translatedTarget.Type is ByReferenceType brt && NormalizeTypeVisitor.TypeErasure.EquivalentTypes(brt.ElementType, constrainedTo ?? memberDeclaringType)))
+						IType expectedTargetType = constrainedTo ?? memberDeclaringType;
+						if (!(translatedTarget.Type is ByReferenceType brt
+							&& NormalizeTypeVisitor.TypeErasure.EquivalentTypes(brt.ElementType, expectedTargetType)))
 						{
-							translatedTarget = translatedTarget.ConvertTo(new ByReferenceType(constrainedTo ?? memberDeclaringType), this);
+							translatedTarget = translatedTarget.ConvertTo(new ByReferenceType(expectedTargetType), this);
 						}
 					}
 					if (translatedTarget.Expression is DirectionExpression)
@@ -3511,7 +3567,7 @@ namespace ICSharpCode.Decompiler.CSharp
 		{
 			return new UndocumentedExpression { UndocumentedExpressionType = UndocumentedExpressionType.ArgListAccess }
 			.WithILInstruction(inst)
-				.WithRR(new TypeResolveResult(compilation.FindType(new TopLevelTypeName("System", "RuntimeArgumentHandle"))));
+				.WithRR(new TypeResolveResult(compilation.FindType(KnownTypeCode.RuntimeArgumentHandle)));
 		}
 
 		protected internal override TranslatedExpression VisitMakeRefAny(MakeRefAny inst, TranslationContext context)
@@ -3526,7 +3582,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				Arguments = { arg.Detach() }
 			}
 			.WithILInstruction(inst)
-				.WithRR(new TypeResolveResult(compilation.FindType(new TopLevelTypeName("System", "TypedReference"))));
+				.WithRR(new TypeResolveResult(compilation.FindType(KnownTypeCode.TypedReference)));
 		}
 
 		protected internal override TranslatedExpression VisitRefAnyType(RefAnyType inst, TranslationContext context)
@@ -3536,7 +3592,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				Arguments = { Translate(inst.Argument).Expression.Detach() }
 			}, "TypeHandle")
 				.WithILInstruction(inst)
-				.WithRR(new TypeResolveResult(compilation.FindType(new TopLevelTypeName("System", "RuntimeTypeHandle"))));
+				.WithRR(new TypeResolveResult(compilation.FindType(KnownTypeCode.RuntimeTypeHandle)));
 		}
 
 		protected internal override TranslatedExpression VisitRefAnyValue(RefAnyValue inst, TranslationContext context)
@@ -4584,10 +4640,10 @@ namespace ICSharpCode.Decompiler.CSharp
 		protected internal override TranslatedExpression VisitDynamicInvokeMemberInstruction(DynamicInvokeMemberInstruction inst, TranslationContext context)
 		{
 			Expression targetExpr;
-			var target = inst.StaticTargetType is IType staticTargetType
-				? new TypeReferenceExpression(ConvertType(staticTargetType))
+			var target = inst.StaticTargetType != null
+				? new TypeReferenceExpression(ConvertType(inst.StaticTargetType))
 					.WithoutILInstruction()
-					.WithRR(new TypeResolveResult(staticTargetType))
+					.WithRR(new TypeResolveResult(inst.StaticTargetType))
 				: TranslateDynamicTarget(inst.Arguments[0], inst.ArgumentInfo[0]);
 			if (inst.BinderFlags.HasFlag(CSharpBinderFlags.InvokeSimpleName) && target.Expression is ThisReferenceExpression)
 			{
