@@ -34,6 +34,7 @@ using Avalonia.Threading;
 using Avalonia.VisualTree;
 
 using AvaloniaEdit.Document;
+using AvaloniaEdit.Editing;
 using AvaloniaEdit.Folding;
 using AvaloniaEdit.Highlighting;
 
@@ -56,15 +57,20 @@ namespace ICSharpCode.ILSpy.TextView
 {
 	public partial class DecompilerTextView : UserControl
 	{
+		internal enum ReferenceClickKind
+		{
+			Default,
+			Navigate,
+			NavigateInNewTab,
+		}
+
 		// Two-track output of BuildHoverContent: rich content opens the sticky Popup with the
 		// pointer-distance corridor; plain content uses Avalonia's ToolTip attached property.
 		internal readonly record struct HoverContent(Control Control, bool IsRich);
 
-		// Local-reference highlight colours: light-yellow "GreenYellow" for matches and a
-		// softer green for the actual definition.
-		static readonly Color LocalMatchBackground = Colors.GreenYellow;
-		static readonly Color LocalDefinitionBackground = Color.FromArgb(0x80, 0xA0, 0xFF, 0xA0);
 		static readonly Color DebugStepBackground = Color.FromArgb(0x80, 0xFF, 0xD7, 0x66);
+		const string SymbolHighlightBrushKey = "ILSpy.SymbolHighlightBrush";
+		const string SymbolDefinitionHighlightBrushKey = "ILSpy.SymbolDefinitionHighlightBrush";
 
 		// Stay-open corridor for the rich popup: as long as the pointer is closer than
 		// `distanceToPopupLimit` to the popup edges, the popup stays. The limit shrinks toward
@@ -79,7 +85,11 @@ namespace ICSharpCode.ILSpy.TextView
 		TextMarkerService textMarkerService = null!;
 		BracketHighlightRenderer bracketHighlightRenderer = null!;
 		readonly List<TextMarker> localReferenceMarks = new();
+		readonly List<TextMarker> caretUsageMarks = new();
 		readonly List<TextMarker> debugStepMarks = new();
+		// The segment the current caret-usage marks were computed for; re-computing is skipped while
+		// the caret moves within that same segment.
+		ReferenceSegment? caretUsageSegment;
 		int debugStepHighlightVersion;
 		readonly List<AvaloniaEdit.Rendering.VisualLineElementGenerator> activeCustomGenerators = new();
 		RichTextColorizer? activeColorizer;
@@ -119,13 +129,18 @@ namespace ICSharpCode.ILSpy.TextView
 			// the TextArea's nested-handler chain so the gesture surfaces a search bar without
 			// us wiring KeyBindings manually. Stored for tests; runtime path is the gesture.
 			SearchPanel = AvaloniaEdit.Search.SearchPanel.Install(Editor);
+			SearchPanel.SetSearchResultsBrush(Editor.SearchResultsBrush);
 
 			// AvaloniaEdit defaults to "Ctrl+Click to follow hyperlink" on its built-in
 			// LinkElementGenerator and propagates that flag onto every VisualLineLinkText it
 			// constructs (including those produced by user-added LinkElementGenerator subclasses
-			// like the About-page resource generator). Decompiler output uses hyperlinks
-			// extensively for in-app navigation — a plain click is the expected affordance.
+			// like the About-page resource generator). Decompiler references are handled below
+			// so NavigateOnCtrlClick can be applied consistently.
 			Editor.Options.RequireControlModifierForHyperlinkClick = false;
+			// The view is read-only, so Tab has nothing to indent; with AcceptsTab the text area marks
+			// the key handled and the focus could never leave the editor. Leaving it unhandled lets
+			// Tab / Shift+Tab move the keyboard focus like in every other control.
+			Editor.Options.AcceptsTab = false;
 
 			SetupElementGenerators();
 			SetupBackgroundRenderers();
@@ -142,6 +157,7 @@ namespace ICSharpCode.ILSpy.TextView
 			Editor.TextArea.Caret.PositionChanged += OnCaretPositionChanged;
 
 			SetupZoomAndCopy();
+			SetupCaretUsageHighlight();
 
 			// Ctrl+L focuses the omnibar into search mode (browser address-bar gesture). Tunnel so
 			// it wins before AvaloniaEdit's own key handling while focus is anywhere in the editor.
@@ -169,6 +185,41 @@ namespace ICSharpCode.ILSpy.TextView
 		{
 			foreach (var margin in Editor.TextArea.LeftMargins)
 				margin.Cursor = ArrowCursor;
+		}
+
+		void KeepBookmarkMarginBeforeLineNumbers()
+		{
+			if (bookmarkMargin == null)
+				return;
+
+			var margins = Editor.TextArea.LeftMargins;
+			var lineNumberIndex = -1;
+			for (var i = 0; i < margins.Count; i++)
+			{
+				if (margins[i] is LineNumberMargin)
+				{
+					lineNumberIndex = i;
+					break;
+				}
+			}
+			var bookmarkIndex = margins.IndexOf(bookmarkMargin);
+			if (lineNumberIndex < 0 || bookmarkIndex < 0 || bookmarkIndex < lineNumberIndex)
+				return;
+
+			var lineNumberMargin = margins[lineNumberIndex];
+			Control? separator = null;
+			if (lineNumberIndex + 1 < margins.Count
+				&& margins[lineNumberIndex + 1] is global::Avalonia.Controls.Shapes.Line)
+				separator = margins[lineNumberIndex + 1];
+
+			if (separator != null)
+				margins.Remove(separator);
+			margins.Remove(lineNumberMargin);
+
+			bookmarkIndex = margins.IndexOf(bookmarkMargin);
+			margins.Insert(bookmarkIndex + 1, lineNumberMargin);
+			if (separator != null)
+				margins.Insert(bookmarkIndex + 2, separator);
 		}
 
 		void OnPreviewKeyDownForOmnibar(object? sender, KeyEventArgs e)
@@ -211,9 +262,27 @@ namespace ICSharpCode.ILSpy.TextView
 				OnTextAreaPointerReleasedForReferenceClick,
 				RoutingStrategies.Bubble,
 				handledEventsToo: true);
+			// The gutter margins react to the left button only, like their WPF counterparts:
+			// AvaloniaEdit's line-number margin moves the caret and selects the line, and a fold
+			// marker toggles, on any button. Marking the press handled before it reaches the margin
+			// skips the margin's own press handler. The text area keeps seeing middle presses (a
+			// middle click on a reference opens it in a new tab).
+			Editor.TextArea.AddHandler(InputElement.PointerPressedEvent,
+				OnTextAreaPointerPressedForMargins,
+				RoutingStrategies.Tunnel);
 		}
 
-		// Position of the last left-button press, in this control's coordinates; null while no
+		void OnTextAreaPointerPressedForMargins(object? sender, PointerPressedEventArgs e)
+		{
+			if (e.GetCurrentPoint(Editor.TextArea).Properties.PointerUpdateKind == PointerUpdateKind.LeftButtonPressed)
+				return;
+			if (e.Source is Visual hit
+				&& hit.FindAncestorOfType<AbstractMargin>(includeSelf: true) is { } margin
+				&& Editor.TextArea.LeftMargins.Contains(margin))
+				e.Handled = true;
+		}
+
+		// Position of the last link-button press, in this control's coordinates; null while no
 		// press is in flight. The release compares against it to tell a click from a drag.
 		Point? referenceClickStart;
 
@@ -222,7 +291,17 @@ namespace ICSharpCode.ILSpy.TextView
 
 		void OnTextAreaPointerPressedForReferenceClick(object? sender, PointerPressedEventArgs e)
 		{
-			referenceClickStart = e.GetCurrentPoint(this).Properties.IsLeftButtonPressed
+			// The Ctrl+F find overlay is a visual child of the TextArea, so a press on it tunnels
+			// through here as well. The release handler resolves the reference by pointer position,
+			// which would find the text the overlay covers, so a press on the overlay must not arm
+			// a reference click (issue #4245).
+			if (e.Source is Visual source && (source == SearchPanel || SearchPanel.IsVisualAncestorOf(source)))
+			{
+				referenceClickStart = null;
+				return;
+			}
+			var properties = e.GetCurrentPoint(this).Properties;
+			referenceClickStart = properties.IsLeftButtonPressed || properties.IsMiddleButtonPressed
 				? e.GetPosition(this)
 				: null;
 		}
@@ -231,33 +310,34 @@ namespace ICSharpCode.ILSpy.TextView
 		{
 			var start = referenceClickStart;
 			referenceClickStart = null;
-			if (start == null || e.InitialPressMouseButton != MouseButton.Left)
+			if (start == null || e.InitialPressMouseButton is not (MouseButton.Left or MouseButton.Middle))
 				return;
+			var clickKind = e.InitialPressMouseButton == MouseButton.Middle
+				? ReferenceClickKind.NavigateInNewTab
+				: e.KeyModifiers.HasFlag(KeyModifiers.Control)
+					? ReferenceClickKind.Navigate
+					: ReferenceClickKind.Default;
 			var delta = e.GetPosition(this) - start.Value;
 			if (Math.Abs(delta.X) >= MinimumDragDistance || Math.Abs(delta.Y) >= MinimumDragDistance)
 				return;
 
 			var segment = GetReferenceSegmentAtPointer(e);
 			if (segment?.Reference == null)
-			{
-				// A click on empty space dismisses the local-reference highlight.
-				ClearLocalReferenceMarks();
 				return;
-			}
 			// AvaloniaEdit's own release handler has already reset its selection mode and released
 			// the pointer capture (it runs first in the bubble phase). Clear the empty caret-click
 			// selection it leaves behind, then navigate; marking the release handled stops it from
 			// bubbling further now that it has been consumed as a link click.
 			Editor.TextArea.ClearSelection();
 			e.Handled = true;
-			OnReferenceClicked(segment, e.KeyModifiers.HasFlag(KeyModifiers.Control));
+			OnReferenceClicked(segment, clickKind);
 		}
 
 		// Background renderers that live for the view's lifetime: the local-reference highlight (marks
 		// cleared/rebuilt per click) and the bracket-pair outline (repainted on every caret move).
 		void SetupBackgroundRenderers()
 		{
-			textMarkerService = new TextMarkerService(Editor.TextArea.TextView);
+			textMarkerService = new TextMarkerService(Editor.TextArea.TextView, this);
 			Editor.TextArea.TextView.BackgroundRenderers.Add(textMarkerService);
 			bracketHighlightRenderer = new BracketHighlightRenderer(Editor.TextArea.TextView);
 		}
@@ -352,6 +432,72 @@ namespace ICSharpCode.ILSpy.TextView
 		/// <summary>The currently painted local-reference highlight marks (test observability).</summary>
 		internal IReadOnlyList<TextMarker> LocalReferenceMarks => localReferenceMarks;
 
+		/// <summary>The currently painted symbol-under-caret highlight marks (test observability).</summary>
+		internal IReadOnlyList<TextMarker> CaretUsageMarks => caretUsageMarks;
+
+		void SetupCaretUsageHighlight()
+		{
+			Editor.TextArea.Caret.PositionChanged += (_, _) => UpdateCaretUsageHighlight();
+		}
+
+		/// <summary>
+		/// The reference segment under the caret: one containing the caret offset, or ending right
+		/// before it (caret just after an identifier). Hover-only segments are skipped.
+		/// </summary>
+		ReferenceSegment? GetReferenceSegmentAtCaret()
+		{
+			if (DataContext is not DecompilerTabPageModel { References: { } references })
+				return null;
+			int offset = Editor.TextArea.Caret.Offset;
+			return Pick(references.FindSegmentsContaining(offset))
+				?? (offset > 0 ? Pick(references.FindSegmentsContaining(offset - 1)) : null);
+
+			static ReferenceSegment? Pick(IEnumerable<ReferenceSegment> segments)
+				=> segments.FirstOrDefault(s => s.Reference != null && s.Kind != ReferenceMode.HoverOnly);
+		}
+
+		void UpdateCaretUsageHighlight()
+		{
+			if (currentDisplaySettings is not { HighlightSymbolsUnderCaret: true }
+				|| DataContext is not DecompilerTabPageModel { References: { } references }
+				|| GetReferenceSegmentAtCaret() is not { } segment
+				|| !IsCaretHighlightable(segment))
+			{
+				ClearCaretUsageMarks();
+				return;
+			}
+			if (ReferenceEquals(segment, caretUsageSegment) && caretUsageMarks.Count > 0)
+				return;
+
+			ClearCaretUsageMarks();
+			caretUsageSegment = segment;
+			int textLength = Editor.Document.TextLength;
+			foreach (var r in references)
+			{
+				if (r.Kind == ReferenceMode.HoverOnly || !AreSameReference(segment.Reference!, r.Reference))
+					continue;
+				if (r.StartOffset < 0 || r.EndOffset > textLength)
+					continue;
+				var mark = textMarkerService.Create(r.StartOffset, r.Length);
+				mark.BackgroundResourceKey = r.IsDefinition ? SymbolDefinitionHighlightBrushKey : SymbolHighlightBrushKey;
+				caretUsageMarks.Add(mark);
+			}
+		}
+
+		// Locals and parameters, members, types and unresolved entity references. Opcodes and other
+		// link targets are excluded: marking every occurrence of an IL opcode would be noise.
+		static bool IsCaretHighlightable(ReferenceSegment segment)
+			=> segment.Kind == ReferenceMode.LocalHighlight
+				|| segment.Reference is IMember or IType or EntityReference;
+
+		void ClearCaretUsageMarks()
+		{
+			caretUsageSegment = null;
+			foreach (var mark in caretUsageMarks)
+				textMarkerService.Remove(mark);
+			caretUsageMarks.Clear();
+		}
+
 		// ThemeManager.Current is a process-lived singleton, so subscribing to its ThemeChanged in
 		// the constructor and never detaching would root every DecompilerTextView for the lifetime of
 		// the process -- one leaked view per decompiler tab. Bind the handler to the visual-tree
@@ -361,6 +507,7 @@ namespace ICSharpCode.ILSpy.TextView
 		{
 			base.OnAttachedToVisualTree(e);
 			ICSharpCode.ILSpy.Themes.ThemeManager.Current.ThemeChanged += OnThemeChangedRebuildHighlighting;
+			SearchPanel.SetSearchResultsBrush(Editor.SearchResultsBrush);
 			// Ctrl toggles between highlight and navigate for reference clicks; listen at the
 			// top level because the keyboard focus is usually elsewhere while hovering.
 			cursorKeyEventSource = global::Avalonia.Controls.TopLevel.GetTopLevel(this);
@@ -387,6 +534,7 @@ namespace ICSharpCode.ILSpy.TextView
 		// re-coloured instances -- so the already-decompiled output repaints with the new palette.
 		void OnThemeChangedRebuildHighlighting(object? sender, System.EventArgs e)
 		{
+			SearchPanel.SetSearchResultsBrush(Editor.SearchResultsBrush);
 			if (boundModel?.HighlightingSpans is not { Count: > 0 } spans)
 				return;
 			var model = new RichTextModel();
@@ -633,6 +781,11 @@ namespace ICSharpCode.ILSpy.TextView
 			{
 				case nameof(DisplaySettings.ShowLineNumbers):
 					Editor.ShowLineNumbers = s.ShowLineNumbers;
+					if (Editor.ShowLineNumbers)
+					{
+						KeepBookmarkMarginBeforeLineNumbers();
+						Editor.PrepareLineNumberMarginsForRender();
+					}
 					break;
 				case nameof(DisplaySettings.EnableWordWrap):
 					Editor.WordWrap = s.EnableWordWrap;
@@ -651,6 +804,12 @@ namespace ICSharpCode.ILSpy.TextView
 					// Off by default; the Options Display "Tab options" toggle shows/hides the bar
 					// live without a re-decompile, per text view.
 					Omnibar.IsVisible = s.EnableOmnibar;
+					break;
+				case nameof(DisplaySettings.NavigateOnCtrlClick):
+					ApplyReferenceCursor(forceNavigation: false);
+					break;
+				case nameof(DisplaySettings.HighlightSymbolsUnderCaret):
+					UpdateCaretUsageHighlight();
 					break;
 			}
 		}
@@ -1096,6 +1255,7 @@ namespace ICSharpCode.ILSpy.TextView
 			// force-close even if the popup currently wants to stay (mouseClick: true).
 			TryCloseExistingPopup(mouseClick: true);
 			ClearLocalReferenceMarks();
+			ClearCaretUsageMarks();
 			ClearDebugStepMarks();
 			Editor.SyntaxHighlighting = HighlightingService.GetByExtension(model.SyntaxExtension);
 			Editor.Document.Text = model.Text;
@@ -1244,19 +1404,6 @@ namespace ICSharpCode.ILSpy.TextView
 			return model.References.FindSegmentsContaining(offset).FirstOrDefault();
 		}
 
-		/// <summary>
-		/// True when a plain click on <paramref name="segment"/> paints the occurrence
-		/// highlight instead of navigating: the member-highlight setting is enabled, Ctrl is
-		/// not held, and the reference is a member, type or unresolved entity reference.
-		/// </summary>
-		bool ShouldHighlightInsteadOfNavigate(ReferenceSegment segment, bool ctrlHeld)
-		{
-			return !ctrlHeld
-				&& segment.Kind == ReferenceMode.Link
-				&& currentDisplaySettings is { HighlightMemberReferences: true }
-				&& segment.Reference is IMember or IType or EntityReference;
-		}
-
 		InputElement? cursorQueryElement;
 		ReferenceSegment? cursorQuerySegment;
 
@@ -1270,28 +1417,28 @@ namespace ICSharpCode.ILSpy.TextView
 		// The hand cursor promises navigation: show it only when a click would actually
 		// navigate. Re-evaluated on pointer moves and on Ctrl presses/releases while a
 		// reference is under the pointer.
-		void ApplyReferenceCursor(bool ctrlHeld)
+		void ApplyReferenceCursor(bool forceNavigation)
 		{
 			if (cursorQueryElement == null || cursorQuerySegment == null)
 				return;
 			bool navigates = cursorQuerySegment.Kind == ReferenceMode.Link
-				&& !ShouldHighlightInsteadOfNavigate(cursorQuerySegment, ctrlHeld);
+				&& (forceNavigation || currentDisplaySettings is not { NavigateOnCtrlClick: true });
 			cursorQueryElement.Cursor = new Cursor(navigates ? StandardCursorType.Hand : StandardCursorType.Arrow);
 		}
 
 		void OnTopLevelKeyDownForReferenceCursor(object? sender, KeyEventArgs e)
 		{
 			if (e.Key is Key.LeftCtrl or Key.RightCtrl)
-				ApplyReferenceCursor(ctrlHeld: true);
+				ApplyReferenceCursor(forceNavigation: true);
 		}
 
 		void OnTopLevelKeyUpForReferenceCursor(object? sender, KeyEventArgs e)
 		{
 			if (e.Key is Key.LeftCtrl or Key.RightCtrl)
-				ApplyReferenceCursor(ctrlHeld: false);
+				ApplyReferenceCursor(forceNavigation: false);
 		}
 
-		internal void OnReferenceClicked(ReferenceSegment segment, bool ctrlHeld = false)
+		internal void OnReferenceClicked(ReferenceSegment segment, ReferenceClickKind clickKind = ReferenceClickKind.Default)
 		{
 			if (DataContext is not DecompilerTabPageModel model || segment.Reference == null)
 				return;
@@ -1301,23 +1448,12 @@ namespace ICSharpCode.ILSpy.TextView
 			if (segment.Kind == ReferenceMode.HoverOnly)
 				return;
 
-			// Local references stay inside this document — paint every match and let the user
-			// scrub through them. Cross-document references clear any existing marks since the
-			// view is about to refresh anyway.
-			if (segment.Kind == ReferenceMode.LocalHighlight)
-			{
-				HighlightLocalReferences(model, segment.Reference);
+			if (segment.Kind != ReferenceMode.Link)
 				return;
-			}
-			// With the member-highlight setting enabled, a plain click on a member or type
-			// reference paints all its occurrences in this view instead of navigating;
-			// Ctrl+Click keeps the navigation behavior. Opcode references always navigate:
-			// highlighting every occurrence of an IL opcode would be noise.
-			if (ShouldHighlightInsteadOfNavigate(segment, ctrlHeld))
-			{
-				HighlightLocalReferences(model, segment.Reference);
+
+			if (clickKind == ReferenceClickKind.Default && currentDisplaySettings is { NavigateOnCtrlClick: true })
 				return;
-			}
+
 			ClearLocalReferenceMarks();
 
 			// In-document jumps win when the definition is in this same view.
@@ -1338,7 +1474,7 @@ namespace ICSharpCode.ILSpy.TextView
 			}
 
 			// Otherwise let the host route the reference (assembly-tree navigation, new tab, ...).
-			model.RaiseNavigateRequested(segment);
+			model.RaiseNavigateRequested(segment, inNewTabPage: clickKind == ReferenceClickKind.NavigateInNewTab);
 		}
 
 		void HighlightLocalReferences(DecompilerTabPageModel model, object reference)
@@ -1351,7 +1487,7 @@ namespace ICSharpCode.ILSpy.TextView
 				if (!AreSameReference(reference, r.Reference))
 					continue;
 				var mark = textMarkerService.Create(r.StartOffset, r.Length);
-				mark.BackgroundColor = r.IsDefinition ? LocalDefinitionBackground : LocalMatchBackground;
+				mark.BackgroundResourceKey = r.IsDefinition ? SymbolDefinitionHighlightBrushKey : SymbolHighlightBrushKey;
 				localReferenceMarks.Add(mark);
 			}
 		}
@@ -1701,10 +1837,7 @@ namespace ICSharpCode.ILSpy.TextView
 			{
 				if (entity.ParentModule?.MetadataFile is not { } metadata)
 					return;
-				// XmlDocLoader handles every layout the decompiler library knows about: .xml
-				// beside the .dll, .NET Framework reference-assemblies paths, and (recently)
-				// the modern .NET ref pack at dotnet/packs/Microsoft.NETCore.App.Ref/...
-				var provider = XmlDocLoader.LoadDocumentation(metadata);
+				var provider = metadata.GetDocumentationProviderOrNull();
 				var documentation = provider?.GetDocumentation(entity);
 				if (documentation == null && entity is IMethod { AccessorOwner: IProperty owner })
 				{

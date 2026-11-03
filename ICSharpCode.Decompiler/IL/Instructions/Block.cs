@@ -103,6 +103,26 @@ namespace ICSharpCode.Decompiler.IL
 			return clone;
 		}
 
+		/// <summary>
+		/// The load of the initializer target an ArrayInitializer block evaluates to. The block
+		/// may end in the implicit conversion of that array to Span&lt;T&gt;/ReadOnlySpan&lt;T&gt;,
+		/// which is returned in <paramref name="conversion"/>; everything else about the block is
+		/// the same in both shapes.
+		/// </summary>
+		internal static LdLoc? MatchArrayInitializerFinal(ILInstruction finalInstruction, out IMethod? conversion)
+		{
+			conversion = null;
+			if (finalInstruction is CallInstruction { Arguments.Count: 1 } call
+				&& call.Method.IsOperator && call.Method.Name == "op_Implicit"
+				&& (call.Method.ReturnType.IsKnownType(KnownTypeCode.SpanOfT)
+					|| call.Method.ReturnType.IsKnownType(KnownTypeCode.ReadOnlySpanOfT)))
+			{
+				conversion = call.Method;
+				finalInstruction = call.Arguments[0];
+			}
+			return finalInstruction as LdLoc;
+		}
+
 		internal override void CheckInvariant(ILPhase phase, ICompilation compilation)
 		{
 			base.CheckInvariant(phase, compilation);
@@ -138,7 +158,7 @@ namespace ICSharpCode.Decompiler.IL
 					}
 					break;
 				case BlockKind.ArrayInitializer:
-					var final = finalInstruction as LdLoc;
+					var final = MatchArrayInitializerFinal(finalInstruction, out _);
 					Debug.Assert(final != null && final.Variable.IsSingleDefinition && final.Variable.Kind == VariableKind.InitializerTarget);
 					IType? type = null;
 					Debug.Assert(Instructions[0].MatchStLoc(final!.Variable, out var init) && init.MatchNewArr(out type));
@@ -151,6 +171,7 @@ namespace ICSharpCode.Decompiler.IL
 					break;
 				case BlockKind.CollectionInitializer:
 				case BlockKind.ObjectInitializer:
+				case BlockKind.WithInitializer:
 					var final2 = finalInstruction as LdLoc;
 					Debug.Assert(final2 != null);
 					var initVar2 = final2!.Variable;
@@ -158,30 +179,41 @@ namespace ICSharpCode.Decompiler.IL
 					IType? type2 = null;
 					bool condition = Instructions[0].MatchStLoc(final2.Variable, out var init2);
 					Debug.Assert(condition);
-					Debug.Assert(init2 is NewObj
-						|| init2 is DefaultValue
-						|| (init2 is CallInstruction c && c.Method.FullNameIs("System.Activator", "CreateInstance") && c.Method.TypeArguments.Count == 1)
-						|| (init2 is Block named && named.Kind == BlockKind.CallWithNamedArgs));
-					switch (init2)
+					if (Kind == BlockKind.WithInitializer)
 					{
-						case NewObj newObj:
-							type2 = newObj.Method.DeclaringType;
-							break;
-						case DefaultValue defaultValue:
-							type2 = defaultValue.Type;
-							break;
-						case Block callWithNamedArgs when callWithNamedArgs.Kind == BlockKind.CallWithNamedArgs:
-							type2 = ((CallInstruction)callWithNamedArgs.FinalInstruction).Method.ReturnType;
-							break;
-						case CallInstruction ci2 when TransformCollectionAndObjectInitializers.IsRecordCloneMethodCall(ci2):
-							type2 = ci2.Method.DeclaringType;
-							break;
-						case Call c2 when c2.Method.FullNameIs("System.Activator", "CreateInstance") && c2.Method.TypeArguments.Count == 1:
-							type2 = c2.Method.TypeArguments[0];
-							break;
-						default:
-							Debug.Assert(false);
-							break;
+						if (initVar2.Type.IsReferenceType == true)
+						{
+							Debug.Assert(init2 is CallInstruction cloneCall && TransformCollectionAndObjectInitializers.IsRecordCloneMethodCall(cloneCall));
+						}
+						type2 = initVar2.Type;
+					}
+					else
+					{
+						Debug.Assert(init2 is NewObj
+							|| init2 is DefaultValue
+							|| (init2 is CallInstruction c && c.Method.FullNameIs("System.Activator", "CreateInstance") && c.Method.TypeArguments.Count == 1)
+							|| (init2 is Block named && named.Kind == BlockKind.CallWithNamedArgs));
+						switch (init2)
+						{
+							case NewObj newObj:
+								type2 = newObj.Method.DeclaringType;
+								break;
+							case DefaultValue defaultValue:
+								type2 = defaultValue.Type;
+								break;
+							case Block callWithNamedArgs when callWithNamedArgs.Kind == BlockKind.CallWithNamedArgs:
+								type2 = ((CallInstruction)callWithNamedArgs.FinalInstruction).Method.ReturnType;
+								break;
+							case CallInstruction ci2 when TransformCollectionAndObjectInitializers.IsRecordCloneMethodCall(ci2):
+								type2 = ci2.Method.DeclaringType;
+								break;
+							case Call c2 when c2.Method.FullNameIs("System.Activator", "CreateInstance") && c2.Method.TypeArguments.Count == 1:
+								type2 = c2.Method.TypeArguments[0];
+								break;
+							default:
+								Debug.Assert(false);
+								break;
+						}
 					}
 					for (int i = 1; i < Instructions.Count; i++)
 					{
@@ -251,6 +283,9 @@ namespace ICSharpCode.Decompiler.IL
 				case BlockKind.CallInlineAssign:
 					// Allow inlining into the first instruction of the block
 					return childIndex == 0;
+				case BlockKind.CallWithNamedArgs:
+					// Allow inlining into any instruction of the block
+					return childIndex < Instructions.Count;
 				default:
 					return false;
 			}

@@ -10,9 +10,9 @@
       },
       "TomsToolbox.Composition.Analyzer": {
         "type": "Direct",
-        "requested": "[2.24.0, )",
-        "resolved": "2.24.0",
-        "contentHash": "dKHqW1MeAMnDIbtx8qDTsGwy/7LUiQ3ccdzHX0PzCh1r98Lgl/1deIky9+ojZO0K5HjeA7uE+eW9/h+v7EOIBA=="
+        "requested": "[2.26.1, )",
+        "resolved": "2.26.1",
+        "contentHash": "72oudDurKAuNzV6zXIVSoT24RNJuuaIm1J0xFYun4ip/Bj9IFHQ+hN1yt1PUOa31dnrR27dSPbWCJHnHfyA2ZA=="
       },
       "icsharpcode.decompiler": {
         "type": "Project",
@@ -23,17 +23,18 @@
       },
       "System.Collections.Immutable": {
         "type": "CentralTransitive",
-        "requested": "[10.0.11, )",
-        "resolved": "10.0.11",
-        "contentHash": "BQY956wwWSjRDoOspL6L1JscbFoSgJK606mO3PYalBHIZRV+Sc2xokvR/NHLlpUEfju6EbW5GbKbNpVYQ65cLw=="
+        "requested": "[10.0.14, )",
+        "resolved": "10.0.14",
+        "contentHash": "7kqcjP+kmcr4zaPDi+VjaImd8ESFGGPYbr9wJo5ddRrtX9JQ9p2DJlUBBvdjJmeC0KBZxYi6L5UIKcXlaq/FDw=="
       },
       "System.Reflection.Metadata": {
         "type": "CentralTransitive",
-        "requested": "[10.0.11, )",
-        "resolved": "10.0.11",
-        "contentHash": "ayYHfHtraz6Z6kFQrlTVJ4lV8jG11noHfu6fWAdeP6I6coGCym14V06jZApgk/9c74HoP8Wmcpxd1NokbKFdbQ=="
+        "requested": "[10.0.14, )",
+        "resolved": "10.0.14",
+        "contentHash": "FdxZ2h1tgX+np5HKupjYCdiq+OqEwX9EV9Qm6ajY0VQ0EOCuRHQAlx6OOitoRRNQncieWUjWDyi193tfl/7xGA=="
       }
     },
+    "net10.0/any": {},
     "net10.0/linux-x64": {},
     "net10.0/osx-arm64": {},
     "net10.0/win-arm64": {},

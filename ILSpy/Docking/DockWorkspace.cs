@@ -202,11 +202,11 @@ namespace ICSharpCode.ILSpy.Docking
 					factory.InitLayout(Layout);
 			}
 
+			// A selection change reaches ShowSelectedNode through OnAssemblyTreePropertyChanged:
+			// the model raises SelectedItem whenever the selection settles, including once at the
+			// end of a bulk edit. Subscribing to SelectedItems.CollectionChanged as well would run
+			// it a second time, and once per node during a bulk edit.
 			assemblyTreeModel.PropertyChanged += OnAssemblyTreePropertyChanged;
-			assemblyTreeModel.SelectedItems.CollectionChanged += (_, _) => {
-				if (!syncingTreeFromActiveTab)
-					ShowSelectedNode();
-			};
 			languageService.PropertyChanged += OnLanguagePropertyChanged;
 
 			ToolPaneMenuItems = toolPaneRegistry.Panes
@@ -607,11 +607,9 @@ namespace ICSharpCode.ILSpy.Docking
 			suppressHistoryRecording = true;
 			try
 			{
-				// Only activate a tab that is not already active: Dock's ActiveDockable setter re-runs
-				// InitActiveDockable -> SetFocusedDockable even for an unchanged value, which would
-				// move the active pane to the document on every navigation.
-				if (factory.Documents is { VisibleDockables: { } docs } documents
-					&& docs.Contains(target.Tab) && !ReferenceEquals(documents.ActiveDockable, target.Tab))
+				// Bring the entry's tab to the front (a no-op for the already-active tab, so the active
+				// pane does not move to the document on every navigation).
+				if (factory.Documents is { VisibleDockables: { } docs } && docs.Contains(target.Tab))
 					factory.SetActiveDockable(target.Tab);
 				if (target is TreeNodeEntry treeNode)
 				{
@@ -660,17 +658,15 @@ namespace ICSharpCode.ILSpy.Docking
 			}
 		}
 
-		void OnNavigateRequested(ReferenceSegment segment)
+		void OnNavigateRequested(object? sender, NavigateRequestedEventArgs e)
 		{
 			// Hyperlink click in the decompiler view: resolve the segment's reference to a tree
 			// node and select it. Falls through silently when we don't know how to model the
 			// reference (only types/members/EntityReferences are supported today).
-			if (segment.Reference == null)
-				return;
 			// EntityReferences with a non-"decompile" protocol (e.g. metadata://) get a first
 			// pass through registered IProtocolHandler exports. The first handler returning a
 			// non-null node wins; if none match we fall through to the default resolver.
-			if (segment.Reference is ICSharpCode.ILSpy.EntityReference entity
+			if (e.Reference is ICSharpCode.ILSpy.EntityReference entity
 				&& entity.Protocol != "decompile")
 			{
 				var module = entity.ResolveAssembly(assemblyTreeModel.AssemblyList!);
@@ -681,15 +677,23 @@ namespace ICSharpCode.ILSpy.Docking
 						var resolved = handler.Resolve(entity.Protocol, module, entity.Handle, out _);
 						if (resolved != null)
 						{
-							assemblyTreeModel.SelectedItem = resolved;
+							if (e.InNewTabPage)
+								OpenNodeInNewTab(resolved);
+							else
+								assemblyTreeModel.SelectedItem = resolved;
 							return;
 						}
 					}
 				}
 			}
-			var node = assemblyTreeModel.FindTreeNode(segment.Reference);
+			var node = assemblyTreeModel.FindTreeNode(e.Reference);
 			if (node != null)
-				assemblyTreeModel.SelectedItem = node;
+			{
+				if (e.InNewTabPage)
+					OpenNodeInNewTab(node);
+				else
+					assemblyTreeModel.SelectedItem = node;
+			}
 		}
 
 		static IEnumerable<Commands.IProtocolHandler> TryGetProtocolHandlers()
@@ -793,6 +797,16 @@ namespace ICSharpCode.ILSpy.Docking
 				lastShownNodes = null;
 				return;
 			}
+			var activeAssemblies = new HashSet<ICSharpCode.ILSpyX.LoadedAssembly>(
+				assemblyTreeModel.AssemblyList?.GetAssemblies() ?? []);
+			if (nodes.Any(n => n.AncestorsAndSelf()
+				.OfType<AssemblyTreeNode>()
+				.Any(a => !IsActiveAssemblyOrPackageEntry(a.LoadedAssembly, activeAssemblies))))
+			{
+				lastShownNodes = null;
+				ClearActiveDecompilerTab();
+				return;
+			}
 			// SelectedItems.CollectionChanged and SelectedItem PropertyChanged both fan into
 			// here on a single click, so dedupe to avoid creating two TabPageModels for the
 			// same selection — the second one's columns would replace the first's, but the
@@ -863,6 +877,17 @@ namespace ICSharpCode.ILSpy.Docking
 				ActivateMainTabIfNeeded(main);
 		}
 
+		static bool IsActiveAssemblyOrPackageEntry(ICSharpCode.ILSpyX.LoadedAssembly assembly,
+			HashSet<ICSharpCode.ILSpyX.LoadedAssembly> activeAssemblies)
+		{
+			for (var current = assembly; current != null; current = current.ParentBundle)
+			{
+				if (activeAssemblies.Contains(current))
+					return true;
+			}
+			return false;
+		}
+
 		// The "exactly one preview tab" rule: tree selections always route to the single preview
 		// ("the One"), tracked by factory.MainTab. Reuse it wherever it sits -- even if a frozen
 		// tab is currently active, ActivateMainTabIfNeeded brings it forward -- as long as it is
@@ -901,17 +926,14 @@ namespace ICSharpCode.ILSpy.Docking
 		}
 
 		// Brings MainTab to the front of the documents dock so the just-updated content is
-		// what the user sees. No-op when MainTab is already active, when there's no
-		// documents dock, or when a Back/Forward navigation is in flight (ApplyNavigationTarget
-		// has already chosen which tab to activate, including possibly a sibling tab — our
-		// activation would override that intent).
+		// what the user sees. No-op when there's no documents dock, or when a Back/Forward
+		// navigation is in flight (ApplyNavigationTarget has already chosen which tab to activate,
+		// including possibly a sibling tab -- our activation would override that intent).
 		void ActivateMainTabIfNeeded(ContentTabPage main)
 		{
 			if (suppressHistoryRecording)
 				return;
-			if (factory.Documents is not { } docs)
-				return;
-			if (ReferenceEquals(docs.ActiveDockable, main))
+			if (factory.Documents is null)
 				return;
 			factory.SetActiveDockable(main);
 		}
@@ -1039,6 +1061,15 @@ namespace ICSharpCode.ILSpy.Docking
 
 		public DecompilerTabPageModel? ActiveDecompilerTab
 			=> factory.MainTab?.Content as DecompilerTabPageModel is { IsStaticContent: false } d ? d : null;
+
+		public void ClearActiveDecompilerTab()
+		{
+			if (ActiveDecompilerTab is not { } tab)
+				return;
+			tab.ClearContent();
+			if (factory.MainTab is { } main)
+				main.SourceNode = null;
+		}
 
 		/// <summary>
 		/// Forwards to <see cref="DecompilerTabPageModel.RunWithCancellation"/> on the active

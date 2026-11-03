@@ -18,6 +18,7 @@
 
 using System;
 using System.ComponentModel;
+using System.Linq;
 
 using Avalonia;
 using Avalonia.Controls;
@@ -57,7 +58,7 @@ namespace ICSharpCode.ILSpy.TextView
 
 		DisplaySettings? displaySettings;
 
-		public DecompilerTextEditor()
+		public DecompilerTextEditor() : base(new DecompilerTextArea())
 		{
 			// Fallback font for hosts without display settings (e.g. bare test compositions);
 			// overwritten from DisplaySettings on attach.
@@ -68,6 +69,7 @@ namespace ICSharpCode.ILSpy.TextView
 			// highlight (square corners, no border) instead of a recoloured run.
 			TextArea.SelectionCornerRadius = 0;
 			TextArea.Bind(TextArea.SelectionBrushProperty, this.GetResourceObservable("ILSpy.EditorSelectionBrush"));
+			this.Bind(SearchResultsBrushProperty, this.GetResourceObservable("ILSpy.EditorSearchResultsBrush"));
 			this.Bind(BackgroundProperty, this.GetResourceObservable("ILSpy.EditorBackground"));
 		}
 
@@ -99,6 +101,17 @@ namespace ICSharpCode.ILSpy.TextView
 				FontFamily = new FontFamily(displaySettings.SelectedFont);
 			if (displaySettings.SelectedFontSize > 0)
 				FontSize = EditorZoom.EffectiveFontSize(displaySettings);
+			PrepareLineNumberMarginsForRender();
+		}
+
+		internal void PrepareLineNumberMarginsForRender()
+		{
+			foreach (var margin in TextArea.LeftMargins.OfType<LineNumberMargin>())
+			{
+				margin.SetValue(TextBlock.FontFamilyProperty, FontFamily);
+				margin.SetValue(TextBlock.FontSizeProperty, FontSize);
+				margin.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+			}
 		}
 
 		static DisplaySettings? TryGetDisplaySettings()

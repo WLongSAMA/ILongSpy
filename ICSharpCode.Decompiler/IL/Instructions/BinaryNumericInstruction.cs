@@ -108,7 +108,7 @@ namespace ICSharpCode.Decompiler.IL
 			// Based on Table 2: Binary Numeric Operations
 			// also works for Table 5: Integer Operations
 			// and for Table 7: Overflow Arithmetic Operations
-			if (left == right || op == BinaryNumericOperator.ShiftLeft || op == BinaryNumericOperator.ShiftRight)
+			if (op == BinaryNumericOperator.ShiftLeft || op == BinaryNumericOperator.ShiftRight)
 			{
 				// Shift op codes use Table 6
 				return left;
@@ -128,13 +128,17 @@ namespace ICSharpCode.Decompiler.IL
 					return StackType.Ref;
 				}
 			}
+			if (left == right)
+			{
+				return left; // same type (but not both Ref)
+			}
 			return StackType.Unknown;
 		}
 
 		public StackType UnderlyingResultType => resultType;
 
 		public sealed override StackType ResultType {
-			get => IsLifted ? StackType.O : resultType;
+			get => IsLifted ? StackType.VT : resultType;
 		}
 
 		public override IType InferType(ICompilation compilation)

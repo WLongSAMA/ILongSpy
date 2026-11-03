@@ -19,8 +19,6 @@
 using System;
 using System.IO;
 
-using ICSharpCode.ILSpyX.Settings;
-
 using ICSharpCode.ILSpy.AppEnv;
 
 using ProductionApp = ICSharpCode.ILSpy.App;
@@ -53,8 +51,7 @@ public class TestApp : ProductionApp
 
 		var dir = Path.Combine(sessionsRoot, Guid.NewGuid().ToString("N"));
 		Directory.CreateDirectory(dir);
-		var configPath = Path.Combine(dir, "ILSpy.xml");
-		ILSpySettings.SettingsFilePathProvider = () => configPath;
+		TestSettingsFile.Create(dir);
 		AppDomain.CurrentDomain.ProcessExit += (_, _) => TryDeleteDirectory(dir);
 
 		var composition = AppComposition.Initialize();
@@ -64,8 +61,15 @@ public class TestApp : ProductionApp
 	{
 		if (!Directory.Exists(sessionsRoot))
 			return;
+		// Several test hosts can run at once (runuitests.ps1 shards the suite into concurrent
+		// processes), each creating session directories here while it runs. Only directories
+		// old enough to belong to an earlier run are orphans; a young one is another host's.
+		var orphanAge = DateTime.UtcNow - TimeSpan.FromMinutes(30);
 		foreach (var sub in Directory.EnumerateDirectories(sessionsRoot))
-			TryDeleteDirectory(sub);
+		{
+			if (Directory.GetCreationTimeUtc(sub) < orphanAge)
+				TryDeleteDirectory(sub);
+		}
 	}
 
 	static void TryDeleteDirectory(string dir)

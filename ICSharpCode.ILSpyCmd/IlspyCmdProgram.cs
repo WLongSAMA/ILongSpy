@@ -42,9 +42,11 @@ using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.Solution;
 using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.ILSpyX.MermaidDiagrammer;
+using ICSharpCode.ILSpyX.Metadata;
 using ICSharpCode.ILSpyX.PdbProvider;
 
 using McMaster.Extensions.CommandLineUtils;
+using McMaster.Extensions.CommandLineUtils.Abstractions;
 
 using Microsoft.Extensions.Hosting;
 
@@ -53,7 +55,7 @@ namespace ICSharpCode.ILSpyCmd
 	[Command(Name = "ilspycmd", Description = "dotnet tool for decompiling .NET assemblies and generating portable PDBs",
 		ExtendedHelpText = @"
 Remarks:
-  -o is valid with every option and required when using -p.
+  -o is valid with every option and required when using -p or -d.
 
 Examples:
     Decompile assembly to console out.
@@ -86,14 +88,46 @@ Examples:
         ilspycmd sample.dll -p -o c:\decompiled
 ")]
 	[HelpOption("-h|--help")]
-	[ProjectOptionRequiresOutputDirectoryValidation]
+	[OutputDirectoryRequiredValidation]
 	[VersionOptionFromMember("-v|--version", Description = "Show version of ICSharpCode.Decompiler used.",
 		MemberName = nameof(DecompilerVersion))]
 	class ILSpyCmdProgram
 	{
 		// https://natemcmaster.github.io/CommandLineUtils/docs/advanced/generic-host.html
 		// https://github.com/natemcmaster/CommandLineUtils/blob/main/docs/samples/dependency-injection/generic-host/Program.cs
-		public static Task<int> Main(string[] args) => new HostBuilder().RunCommandLineApplicationAsync<ILSpyCmdProgram>(args);
+		public static async Task<int> Main(string[] args)
+		{
+			try
+			{
+				return await new HostBuilder().RunCommandLineApplicationAsync<ILSpyCmdProgram>(args, app => {
+					InstantiateValueParsers(app.ValueParsers);
+					// McMaster reports a failed validation (e.g. -p without -o, a missing input file) and
+					// returns 1; usage mistakes exit with EX_USAGE like every other usage error here.
+					var reportValidationError = app.ValidationErrorHandler;
+					app.ValidationErrorHandler = result => {
+						reportValidationError(result);
+						return ProgramExitCodes.EX_USAGE;
+					};
+				});
+			}
+			catch (CommandParsingException ex)
+			{
+				// An unknown option or an option value that does not parse. CommandLineApplication.Execute
+				// reports these as a usage error, but the generic host lets them escape.
+				Console.Error.WriteLine(ex.Message);
+				return ProgramExitCodes.EX_USAGE;
+			}
+		}
+
+		// McMaster looks up the value parser of every option type at runtime through MakeGenericMethod.
+		// Under Native AOT that only works for generic instantiations the compiler has generated, and
+		// it does not generate them for value types that nothing references statically. These direct
+		// calls cover the value-typed options of this class (the result is cached by the provider).
+		static void InstantiateValueParsers(ValueParserProvider parsers)
+		{
+			parsers.GetParser<(bool IsSet, string Value)>();
+			parsers.GetParser<LanguageVersion>();
+		}
 
 		[FilesExist]
 		[Required]
@@ -151,7 +185,10 @@ Examples:
 		[Option("--dump-table <table>", "Dump a metadata table: prints RID, token, names, heap offsets and coded indexes of every row. <table> is the ECMA-335 table name (e.g. TypeDef, Property, MethodSemantics; case-insensitive) or table number (decimal or 0x-prefixed hex, e.g. 0x17).", CommandOptionType.SingleValue)]
 		public string DumpTableName { get; }
 
-		[Option("--json", "Output as JSON. Currently only supported together with --dump-table.", CommandOptionType.NoValue)]
+		[Option("--dump-pdb", "Dump the debug information of the assembly's PDB: documents, per-method sequence points, the scope tree with its variables, constants and imports, and custom debug information. Reads both Portable and Windows PDBs. Use -usepdb:<file> to point at a PDB that is not next to the assembly.", CommandOptionType.NoValue)]
+		public bool DumpPdbFlag { get; }
+
+		[Option("--json", "Output as JSON. Only supported together with --dump-table or --dump-pdb.", CommandOptionType.NoValue)]
 		public bool JsonOutputFlag { get; }
 
 		public string DecompilerVersion => "ilspycmd: " + typeof(ILSpyCmdProgram).Assembly.GetName().Version.ToString() +
@@ -260,9 +297,9 @@ Examples:
 				Directory.CreateDirectory(outputDirectory);
 			}
 
-			if (JsonOutputFlag && DumpTableName == null)
+			if (JsonOutputFlag && DumpTableName == null && !DumpPdbFlag)
 			{
-				app.Error.WriteLine("The --json option is currently only supported together with --dump-table.");
+				app.Error.WriteLine("The --json option is only supported together with --dump-table or --dump-pdb.");
 				return ProgramExitCodes.EX_USAGE;
 			}
 
@@ -362,10 +399,11 @@ Examples:
 					if (outputDirectory != null)
 					{
 						string outputName = Path.GetFileNameWithoutExtension(fileName);
-						output = File.CreateText(Path.Combine(outputDirectory, outputName) + ".il");
+						output = File.CreateText(Path.Combine(outputDirectory,
+							(string.IsNullOrEmpty(TypeName) ? outputName : TypeName) + ".il"));
 					}
 
-					return ShowIL(fileName, output);
+					return ShowIL(fileName, output, app);
 				}
 #if DEBUG
 				else if (ShowILAstFlag || AfterTransformName != null)
@@ -425,19 +463,40 @@ Examples:
 						return ProgramExitCodes.EX_USAGE;
 					}
 
-					using var tableModule = LoadInputModule(fileName);
+					// a standalone Portable PDB is a valid input here: it carries the debug tables
+					using var tableModule = InputFileLoader.LoadMetadata(fileName, BundleEntryName);
 
+					try
+					{
+						if (outputDirectory != null)
+						{
+							// per-file writer, disposed here: the shared 'output' is only closed once
+							// at the end of the run, which would lose the buffered tail of every file
+							// but the last when dumping multiple assemblies
+							string outputName = Path.GetFileNameWithoutExtension(fileName);
+							using var tableOutput = File.CreateText(Path.Combine(outputDirectory, outputName) + $".{table}.{(JsonOutputFlag ? "json" : "txt")}");
+							return MetadataTableDumper.DumpTable(tableModule, tableOutput, table, JsonOutputFlag);
+						}
+
+						return MetadataTableDumper.DumpTable(tableModule, output, table, JsonOutputFlag);
+					}
+					catch (MetadataTableDumper.NoPortableDebugMetadataException ex)
+					{
+						app.Error.WriteLine(ex.Message);
+						return ProgramExitCodes.EX_NOINPUT;
+					}
+				}
+				else if (DumpPdbFlag)
+				{
 					if (outputDirectory != null)
 					{
-						// per-file writer, disposed here: the shared 'output' is only closed once
-						// at the end of the run, which would lose the buffered tail of every file
-						// but the last when dumping multiple assemblies
+						// per-file writer, disposed here, for the same reason as in --dump-table
 						string outputName = Path.GetFileNameWithoutExtension(fileName);
-						using var tableOutput = File.CreateText(Path.Combine(outputDirectory, outputName) + $".{table}.{(JsonOutputFlag ? "json" : "txt")}");
-						return MetadataTableDumper.DumpTable(tableModule, tableOutput, table, JsonOutputFlag);
+						using var pdbOutput = File.CreateText(Path.Combine(outputDirectory, outputName) + $".pdb.{(JsonOutputFlag ? "json" : "txt")}");
+						return DumpPdb(fileName, pdbOutput, app);
 					}
 
-					return MetadataTableDumper.DumpTable(tableModule, output, table, JsonOutputFlag);
+					return DumpPdb(fileName, output, app);
 				}
 				else
 				{
@@ -671,16 +730,114 @@ Examples:
 			return 0;
 		}
 
-		int ShowIL(string assemblyFileName, TextWriter output)
+		/// <summary>
+		/// Disassembles the module, or the type (--type) or member(s) (--member) selected from it,
+		/// applying the same selection rules as the C# output.
+		/// </summary>
+		int ShowIL(string assemblyFileName, TextWriter output, CommandLineApplication app)
 		{
-			var module = LoadInputModule(assemblyFileName);
+			if (MemberIdString != null && TypeName != null)
+			{
+				app.Error.WriteLine("The --type and --member options are mutually exclusive.");
+				return ProgramExitCodes.EX_USAGE;
+			}
+
+			// The type system resolves the selection; its module is the one the handles belong to.
+			CSharpDecompiler decompiler = GetDecompiler(assemblyFileName);
+			var module = decompiler.TypeSystem.MainModule.MetadataFile;
 			output.WriteLine($"// IL code: {module.Name}");
 			var disassembler = new ReflectionDisassembler(new PlainTextOutput(output), CancellationToken.None) {
-				DebugInfo = TryLoadPDB(module),
+				DebugInfo = decompiler.DebugInfoProvider,
 				ShowSequencePoints = ShowILSequencePointsFlag,
 			};
+
+			if (MemberIdString != null)
+			{
+				if (!TryResolveMembers(decompiler.TypeSystem, MemberIdString, out var handles, out string error))
+				{
+					Console.Error.WriteLine(error);
+					return ProgramExitCodes.EX_DATAERR;
+				}
+
+				// A short-form id names an overload group; see DecompileMember for why every
+				// member is shown and why the output has to say so.
+				if (handles.Length > 1)
+				{
+					output.WriteLine($"// '{MemberIdString.Trim()}' names {handles.Length} members; all of them are shown below.");
+					foreach (var member in handles)
+					{
+						output.WriteLine($"// {module.GetIdString(member)}");
+					}
+					output.WriteLine();
+				}
+
+				bool first = true;
+				foreach (var member in handles)
+				{
+					if (!first)
+						output.WriteLine();
+					DisassembleEntity(disassembler, module, member, output);
+					first = false;
+				}
+				return 0;
+			}
+
+			if (TypeName != null)
+			{
+				if (!TryResolveType(decompiler.TypeSystem, TypeName, out ITypeDefinition typeDefinition, out string error))
+				{
+					Console.Error.WriteLine(error);
+					return ProgramExitCodes.EX_DATAERR;
+				}
+				disassembler.DisassembleType(module, (TypeDefinitionHandle)typeDefinition.MetadataToken);
+				return 0;
+			}
+
 			disassembler.WriteModuleContents(module);
 			return 0;
+		}
+
+		/// <summary>
+		/// Writes one entity the way the UI's IL view does: a property or event is followed by
+		/// its accessor methods, since the entity definition alone carries no code.
+		/// </summary>
+		static void DisassembleEntity(ReflectionDisassembler disassembler, MetadataFile module, EntityHandle handle, TextWriter output)
+		{
+			switch (handle.Kind)
+			{
+				case HandleKind.TypeDefinition:
+					disassembler.DisassembleType(module, (TypeDefinitionHandle)handle);
+					break;
+				case HandleKind.MethodDefinition:
+					disassembler.DisassembleMethod(module, (MethodDefinitionHandle)handle);
+					break;
+				case HandleKind.FieldDefinition:
+					disassembler.DisassembleField(module, (FieldDefinitionHandle)handle);
+					break;
+				case HandleKind.PropertyDefinition:
+					disassembler.DisassembleProperty(module, (PropertyDefinitionHandle)handle);
+					var propertyAccessors = module.Metadata.GetPropertyDefinition((PropertyDefinitionHandle)handle).GetAccessors();
+					DisassembleAccessor(propertyAccessors.Getter);
+					DisassembleAccessor(propertyAccessors.Setter);
+					break;
+				case HandleKind.EventDefinition:
+					disassembler.DisassembleEvent(module, (EventDefinitionHandle)handle);
+					var eventAccessors = module.Metadata.GetEventDefinition((EventDefinitionHandle)handle).GetAccessors();
+					DisassembleAccessor(eventAccessors.Adder);
+					DisassembleAccessor(eventAccessors.Remover);
+					DisassembleAccessor(eventAccessors.Raiser);
+					break;
+				default:
+					throw new NotSupportedException($"Cannot disassemble a {handle.Kind} handle.");
+			}
+
+			void DisassembleAccessor(MethodDefinitionHandle accessor)
+			{
+				if (accessor.IsNil)
+					return;
+				output.WriteLine();
+				disassembler.DisassembleMethod(module, accessor);
+			}
 		}
 
 #if DEBUG
@@ -1261,6 +1418,33 @@ Examples:
 				}
 			}
 
+			return 0;
+		}
+
+		int DumpPdb(string assemblyFileName, TextWriter output, CommandLineApplication app)
+		{
+			try
+			{
+				string pdbFileName = InputPDBFile.IsSet ? InputPDBFile.Value : null;
+				if (InputFileLoader.TryLoadPackageEntry(assemblyFileName, BundleEntryName, applyWinRTProjections: false, out var module))
+				{
+					using (module)
+					{
+						var image = module.Reader.GetEntireImage().GetContent().ToArray();
+						using var assemblyStream = new MemoryStream(image, writable: false);
+						PdbDumper.Dump(assemblyStream, module.FileName, pdbFileName, output, JsonOutputFlag);
+					}
+				}
+				else
+				{
+					PdbDumper.Dump(assemblyFileName, pdbFileName, output, JsonOutputFlag);
+				}
+			}
+			catch (PdbDumper.NoDebugSymbolsException ex)
+			{
+				app.Error.WriteLine(ex.Message);
+				return ProgramExitCodes.EX_NOINPUT;
+			}
 			return 0;
 		}
 

@@ -453,6 +453,8 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 					case ParameterizedType pt:
 						if (UseNullableSpecifierForValueTypes && pt.IsKnownType(KnownTypeCode.NullableOfT))
 						{
+							if (pt.TypeArguments[0].Kind == TypeKind.Unknown)
+								goto default;
 							return ConvertType(pt.TypeArguments[0]).MakeNullableType();
 						}
 						astType = ConvertTypeHelper(pt.GenericType, pt.TypeArguments);
@@ -866,7 +868,7 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 				{
 					var argA = a.NamedArguments[i];
 					var argB = b.NamedArguments[i];
-					result = argA.Name!.CompareTo(argB.Name);
+					result = string.CompareOrdinal(argA.Name, argB.Name);
 					if (result != 0)
 						return result;
 					result = CompareType(argA.Type, argB.Type);
@@ -884,7 +886,7 @@ namespace ICSharpCode.Decompiler.CSharp.Syntax
 
 			static int CompareType(IType a, IType b)
 			{
-				return a.FullName.CompareTo(b.FullName);
+				return string.CompareOrdinal(a.FullName, b.FullName);
 			}
 		}
 		#endregion

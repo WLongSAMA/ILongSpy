@@ -43,6 +43,14 @@ using ICSharpCode.ILSpy.ViewModels;
 
 namespace ICSharpCode.ILSpy.TextView
 {
+	public sealed class NavigateRequestedEventArgs(ReferenceSegment segment, object? source = null, bool inNewTabPage = false) : EventArgs
+	{
+		public ReferenceSegment Segment { get; } = segment ?? throw new ArgumentNullException(nameof(segment));
+		public object Reference { get; } = segment.Reference ?? throw new ArgumentException("The reference segment must have a reference.", nameof(segment));
+		public object? Source { get; } = source;
+		public bool InNewTabPage { get; } = inNewTabPage;
+	}
+
 	/// <summary>
 	/// A document tab that hosts decompiled output for a single tree node. Re-decompiles when
 	/// <see cref="CurrentNode"/> changes; previous in-flight decompilations are cancelled so a
@@ -274,10 +282,10 @@ namespace ICSharpCode.ILSpy.TextView
 		/// Fired when the user clicks a cross-document reference. The host (DockWorkspace)
 		/// resolves the target on the assembly tree side.
 		/// </summary>
-		public event System.Action<ReferenceSegment>? NavigateRequested;
+		public event EventHandler<NavigateRequestedEventArgs>? NavigateRequested;
 
-		internal void RaiseNavigateRequested(ReferenceSegment segment)
-			=> NavigateRequested?.Invoke(segment);
+		internal void RaiseNavigateRequested(ReferenceSegment segment, bool inNewTabPage = false)
+			=> NavigateRequested?.Invoke(this, new NavigateRequestedEventArgs(segment, inNewTabPage: inNewTabPage));
 
 		/// <summary>
 		/// Fired when the user activates an AvaloniaEdit hyperlink. Subscribers return
@@ -309,6 +317,7 @@ namespace ICSharpCode.ILSpy.TextView
 		// LoadedAssembly.Text -> metadata, which AVs when an assembly was unloaded
 		// between selection and the title update.
 		string cachedBaseTitle = "(unnamed)";
+		int titleVersion;
 
 		// IsStaticContent is inherited from ContentPageModel: true for static pages (e.g. About)
 		// excludes this tab from the "current decompile target" lookup, so later tree-node
@@ -362,6 +371,30 @@ namespace ICSharpCode.ILSpy.TextView
 				OnPropertyChanged(nameof(CurrentNode));
 				StartDecompile();
 			}
+		}
+
+		internal void ClearContent()
+		{
+			titleVersion++;
+			activeCts?.Cancel();
+			foreach (var n in currentNodes)
+				n.PropertyChanged -= OnCurrentNodePropertyChanged;
+			currentNodes = System.Array.Empty<ILSpyTreeNode>();
+			cachedBaseTitle = ComposeBaseTitle();
+			Title = cachedBaseTitle;
+			HighlightingModel = null;
+			HighlightingSpans = null;
+			Foldings = null;
+			References = null;
+			DefinitionLookup = null;
+			DebugInfo = null;
+			DebugStepHighlight = null;
+			UIElements = null;
+			Text = string.Empty;
+			IsDecompiling = false;
+			TaskbarProgress?.SetState(TaskbarProgressState.None);
+			OnPropertyChanged(nameof(CurrentNodes));
+			OnPropertyChanged(nameof(CurrentNode));
 		}
 
 		void OnCurrentNodePropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -523,10 +556,12 @@ namespace ICSharpCode.ILSpy.TextView
 			using var _phase = ICSharpCode.ILSpy.AppEnv.AppLog.Phase($"DecompileAsync #{callNumber}");
 			activeCts?.Cancel();
 			var cts = activeCts = new CancellationTokenSource();
+			int requestTitleVersion = ++titleVersion;
 			var nodes = currentNodes;
 			var language = Language;
 			if (nodes.Count == 0 || language == null)
 			{
+				Title = cachedBaseTitle;
 				// Clear the per-decompile artefacts alongside Text. If we leave Foldings /
 				// HighlightingModel / References pointing at the previous decompile's state,
 				// the next ApplyDocument fires (via SyntaxExtension or Text setter) tries to
@@ -554,7 +589,7 @@ namespace ICSharpCode.ILSpy.TextView
 			// editor state is left untouched so cancellation falls back cleanly.
 			Title = ComposeSpinnerTitle(0, cachedBaseTitle);
 			TaskbarProgress?.SetState(TaskbarProgressState.Indeterminate);
-			_ = RunSpinnerAsync(cts.Token);
+			_ = RunSpinnerAsync(cts.Token, requestTitleVersion);
 
 			try
 			{
@@ -641,6 +676,13 @@ namespace ICSharpCode.ILSpy.TextView
 				ICSharpCode.ILSpy.AppEnv.AppLog.Mark($"DecompileAsync #{callNumber}: {rendered.Length} chars, {(output.Foldings?.Count ?? 0)} foldings, {(output.References?.Count ?? 0)} refs");
 				using (ICSharpCode.ILSpy.AppEnv.AppLog.Phase($"DecompileAsync #{callNumber}: Dispatcher.InvokeAsync (apply Text + props, triggers ApplyDocument)"))
 					await Dispatcher.UIThread.InvokeAsync(() => {
+						// Re-check on the UI thread, not just before rendering: collecting the text
+						// and waiting for this callback both take time, and a cancel that lands in
+						// that window (the assembly was removed from the list, the user selected
+						// something else) must not let the finished output overwrite whatever state
+						// the tab has been put into since.
+						if (cts.Token.IsCancellationRequested || requestTitleVersion != titleVersion)
+							return;
 						Title = cachedBaseTitle;
 						ApplyOutput(output, effectiveSyntaxExtension, rendered);
 					});
@@ -655,7 +697,7 @@ namespace ICSharpCode.ILSpy.TextView
 				// "Decompiling…" overlay is far worse than leaving the previous output visible.
 				// Skip the reset if a newer request has already taken over (activeCts is rotated
 				// at the top of DecompileAsync).
-				if (ReferenceEquals(activeCts, cts))
+				if (ReferenceEquals(activeCts, cts) && requestTitleVersion == titleVersion)
 				{
 					void StopSpinner()
 					{
@@ -682,10 +724,10 @@ namespace ICSharpCode.ILSpy.TextView
 		static string ComposeSpinnerTitle(int frame, string baseTitle)
 			=> $"{SpinnerFrames[frame % SpinnerFrames.Length]} {baseTitle}";
 
-		async Task RunSpinnerAsync(CancellationToken token)
+		async Task RunSpinnerAsync(CancellationToken token, int spinnerTitleVersion)
 		{
 			int frame = 1;
-			while (!token.IsCancellationRequested)
+			while (!token.IsCancellationRequested && spinnerTitleVersion == titleVersion)
 			{
 				try
 				{
@@ -695,7 +737,7 @@ namespace ICSharpCode.ILSpy.TextView
 				{
 					return;
 				}
-				if (token.IsCancellationRequested || !IsDecompiling)
+				if (token.IsCancellationRequested || !IsDecompiling || spinnerTitleVersion != titleVersion)
 					return;
 				Title = ComposeSpinnerTitle(frame++, cachedBaseTitle);
 			}
@@ -716,6 +758,7 @@ namespace ICSharpCode.ILSpy.TextView
 			ArgumentNullException.ThrowIfNull(taskCreation);
 			activeCts?.Cancel();
 			var cts = activeCts = new CancellationTokenSource();
+			int requestTitleVersion = ++titleVersion;
 			ProgressTitle = progressTitle ?? ICSharpCode.ILSpy.Properties.Resources.Decompiling;
 			ResetProgress();
 			IsDecompiling = true;
@@ -724,14 +767,14 @@ namespace ICSharpCode.ILSpy.TextView
 			// strip advertises the running work, exactly like an in-place decompile does.
 			cachedBaseTitle = Title;
 			Title = ComposeSpinnerTitle(0, cachedBaseTitle);
-			_ = RunSpinnerAsync(cts.Token);
+			_ = RunSpinnerAsync(cts.Token, requestTitleVersion);
 			try
 			{
 				return await taskCreation(cts.Token).ConfigureAwait(true);
 			}
 			finally
 			{
-				if (ReferenceEquals(activeCts, cts))
+				if (ReferenceEquals(activeCts, cts) && requestTitleVersion == titleVersion)
 				{
 					void StopSpinner()
 					{

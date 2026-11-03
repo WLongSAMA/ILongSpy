@@ -6,6 +6,18 @@ To install:
 dotnet tool install --global ilspycmd
 ```
 
+## Platform-specific packages
+
+`ilspycmd` is published as a pointer package that refers to one package per platform; `dotnet tool install`
+and `dnx` pick the matching one, so the command above is all you need.
+
+- Windows x64 and Linux x64 get a Native AOT build (`ilspycmd.win-x64`, `ilspycmd.linux-x64`): it starts
+  faster and does not need a .NET runtime to run.
+- Every other platform gets the framework-dependent build (`ilspycmd.any`), which runs on the .NET 10 runtime.
+
+Installing or updating needs the .NET SDK 10.0.100 or newer on every platform, because older SDKs cannot
+read the pointer package.
+
 Help output (`ilspycmd --help`):
 
 ``` text
@@ -45,7 +57,11 @@ Options:
                                           indexes of every row. <table> is the ECMA-335 table name (e.g. TypeDef,
                                           Property, MethodSemantics; case-insensitive) or table number (decimal or
                                           0x-prefixed hex, e.g. 0x17).
-  --json                                  Output as JSON. Currently only supported together with --dump-table.
+  --dump-pdb                              Dump the debug information of the assembly's PDB: documents, per-method
+                                          sequence points, the scope tree with its variables, constants and imports, and
+                                          custom debug information. Reads both Portable and Windows PDBs. Use
+                                          -usepdb:<file> to point at a PDB that is not next to the assembly.
+  --json                                  Output as JSON. Only supported together with --dump-table or --dump-pdb.
   -lv|--languageversion <version>         C# Language version: CSharp1, CSharp2, CSharp3, CSharp4, CSharp5, CSharp6,
                                           CSharp7, CSharp7_1, CSharp7_2, CSharp7_3, CSharp8_0, CSharp9_0, CSharp10_0,
                                           CSharp11_0, CSharp12_0, CSharp13_0, Preview or Latest
@@ -92,7 +108,7 @@ Options:
                                           'System.Collections' before 'System' to remove both of them completely.
 
 Remarks:
-  -o is valid with every option and required when using -p.
+  -o is valid with every option and required when using -p or -d.
 
 Examples:
     Decompile assembly to console out.

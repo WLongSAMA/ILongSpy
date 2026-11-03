@@ -240,8 +240,8 @@ namespace ICSharpCode.Decompiler.CSharp
 		/// Gets or sets whether the pipeline records its steps into <see cref="Stepper"/>, so that one
 		/// step tree spans all of it: the IL transforms of every member, the ILAst-to-C# conversion,
 		/// and the C# AST transforms.
-		/// Off by default, and off means the whole pipeline records nothing: every phase keeps the
-		/// stepper its context creates for itself, which nothing reads. Turning it on is what makes the
+		/// Off by default, and off means the whole pipeline records nothing: contexts do not get a
+		/// stepper unless this is enabled. Turning it on is what makes the
 		/// steps <i>retained</i>, and each retained step pins the ILAst it captured, including the
 		/// instructions its transform removed. That is affordable for the single type a step view
 		/// displays and not for a whole-module decompile, so only callers that show the steps opt in.
@@ -272,6 +272,7 @@ namespace ICSharpCode.Decompiler.CSharp
 		{
 			return new List<IAstTransform> {
 				new PatternStatementTransform(),
+				new RewriteVisualBasicWithEventsInInitializeComponent(),
 				new ReplaceMethodCallsWithOperators(), // must run before DeclareVariables.EnsureExpressionStatementsAreValid
 				new IntroduceUnsafeModifier(),
 				new AddCheckedBlocks(),
@@ -279,8 +280,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				new TransformFieldAndConstructorInitializers(), // must run after DeclareVariables
 				new PrettifyAssignments(), // must run after DeclareVariables
 				new IntroduceUsingDeclarations(),
-				new IntroduceExtensionMethods(), // must run after IntroduceUsingDeclarations
-				new IntroduceQueryExpressions(), // must run after IntroduceExtensionMethods
+				new IntroduceQueryExpressions(), // needs the extension method syntax CallBuilder writes
 				new CombineQueryExpressions(),
 				new NormalizeBlockStatements(),
 				new FlattenSwitchBlocks(),
@@ -369,7 +369,10 @@ namespace ICSharpCode.Decompiler.CSharp
 		/// </summary>
 		internal static IEnumerable<string> GetErrorCommentLines(Exception error)
 		{
-			yield return "ILSpy could not decompile this. Please report the exception below,";
+			yield return error is DecompilerException decompilerException
+				? $"ILSpy could not decompile this member: {GetErrorHeadline(decompilerException)}"
+				: "ILSpy could not decompile this member.";
+			yield return "Please report the exception below,";
 			yield return "along with the assembly it came from, at " + DecompilationErrorReportUrl;
 			foreach (string line in error.ToString().Split('\n'))
 			{
@@ -476,6 +479,8 @@ namespace ICSharpCode.Decompiler.CSharp
 							return true;
 						if (settings.AnonymousTypes && type.IsAnonymousType(metadata))
 							return true;
+						if (settings.AnonymousMethods && type.IsDelegate(metadata) && name.StartsWith("VB$AnonymousDelegate_", StringComparison.Ordinal))
+							return true;
 						if (settings.Dynamic && type.IsDelegate(metadata) && (name.StartsWith("<>A", StringComparison.Ordinal) || name.StartsWith("<>F", StringComparison.Ordinal)))
 							return true;
 					}
@@ -495,6 +500,8 @@ namespace ICSharpCode.Decompiler.CSharp
 						if ((settings.AutomaticProperties || settings.FieldKeyword)
 							&& module.PropertyAndEventBackingFieldLookup.IsPropertyBackingField(fieldHandle, out var propertyHandle))
 						{
+							if (HasAccessedThroughPropertyAttribute(field, metadata))
+								return false;
 							// GetterOnlyAutomaticProperties exists so output stays compilable on
 							// toolchains that predate C# 6 getter-only auto-properties. Switching it off
 							// is a stronger statement than leaving FieldKeyword at its default, and it
@@ -538,6 +545,20 @@ namespace ICSharpCode.Decompiler.CSharp
 		{
 			var name = metadata.GetString(field.Name);
 			return name.StartsWith("<", StringComparison.Ordinal) && name.EndsWith(">P", StringComparison.Ordinal);
+		}
+
+		static bool HasAccessedThroughPropertyAttribute(SRM.FieldDefinition field, MetadataReader metadata)
+		{
+			foreach (var attrHandle in field.GetCustomAttributes())
+			{
+				var attrType = metadata.GetCustomAttribute(attrHandle).GetAttributeType(metadata);
+				var fullTypeName = attrType.GetFullTypeName(metadata);
+				if (fullTypeName.ReflectionName == "System.Runtime.CompilerServices.AccessedThroughPropertyAttribute"
+					|| fullTypeName.ReflectionName == "Microsoft.VisualBasic.CompilerServices.AccessedThroughPropertyAttribute"
+					|| fullTypeName.Name == "AccessedThroughPropertyAttribute")
+					return true;
+			}
+			return false;
 		}
 
 		static bool IsAccessorInterfaceImplementationRuntimeHelper(PEFile module, MethodDefinitionHandle handle)
@@ -730,10 +751,10 @@ namespace ICSharpCode.Decompiler.CSharp
 		static bool IsClosureType(SRM.TypeDefinition type, MetadataReader metadata)
 		{
 			var name = metadata.GetString(type.Name);
+			if (name.Contains("DisplayClass") || name.Contains("AnonStorey") || name.Contains("Closure$") || name.Contains("<>c"))
+				return type.Name.IsGeneratedName(metadata) || type.IsCompilerGenerated(metadata);
 			if (!type.Name.IsGeneratedName(metadata) || !type.IsCompilerGenerated(metadata))
 				return false;
-			if (name.Contains("DisplayClass") || name.Contains("AnonStorey") || name.Contains("Closure$"))
-				return true;
 			return type.BaseType.IsKnownType(metadata, KnownTypeCode.Object) && !type.GetInterfaceImplementations().Any();
 		}
 
@@ -833,6 +854,8 @@ namespace ICSharpCode.Decompiler.CSharp
 
 		IDocumentationProvider? CreateDefaultDocumentationProvider()
 		{
+			if (!settings.ShowXmlDocumentation)
+				return null;
 			try
 			{
 				return XmlDocLoader.LoadDocumentation(module.MetadataFile);
@@ -889,8 +912,7 @@ namespace ICSharpCode.Decompiler.CSharp
 			var context = new TransformContext(typeSystem, decompileRun, decompilationContext, typeSystemAstBuilder);
 			// Off means off for the whole pipeline: leaving the AST half recording would give the same
 			// pipeline two numbering bases, and an index recorded under one of them means a different
-			// step under the other. Without this the context keeps a stepper of its own, which nothing
-			// reads.
+			// step under the other. Without this the context does not record steps.
 			if (RecordSteps)
 				context.Stepper = Stepper;
 			// The tree handed to the pipeline must already be well-formed; check it once up front so a
@@ -2226,6 +2248,7 @@ namespace ICSharpCode.Decompiler.CSharp
 					// without this the decompiled program does not compile (CS5001).
 					methodDecl.Name = "Main";
 				}
+				FixPrivateVirtualMemberModifiers(methodDecl, method);
 				FixParameterNames(methodDecl);
 				var methodDefinition = metadata.GetMethodDefinition((MethodDefinitionHandle)method.MetadataToken);
 				if (!settings.LocalFunctions && LocalFunctionDecompiler.LocalFunctionNeedsAccessibilityChange(method.ParentModule!.MetadataFile, (MethodDefinitionHandle)method.MetadataToken))
@@ -2393,9 +2416,10 @@ namespace ICSharpCode.Decompiler.CSharp
 
 				AddAnnotationsToDeclaration(method, entityDecl, function, parameterOffset);
 
-				var localSettings = settings.Clone();
+				var localSettings = settings;
 				if (IsWindowsFormsInitializeComponentMethod(method))
 				{
+					localSettings = settings.Clone();
 					localSettings.UseImplicitMethodGroupConversion = false;
 					localSettings.UsingDeclarations = false;
 					localSettings.AlwaysCastTargetsOfExplicitInterfaceImplementationCalls = true;
@@ -2474,7 +2498,8 @@ namespace ICSharpCode.Decompiler.CSharp
 				// One method the decompiler cannot handle must not cost the user the type or, when
 				// exporting a project, the assembly around it: keep the signature, put the error in
 				// front of it, and let the remaining members decompile.
-				errors.Add(innerException as DecompilerException ?? new DecompilerException(module, method, innerException));
+				var decompilationError = innerException as DecompilerException ?? new DecompilerException(module, method, innerException);
+				errors.Add(decompilationError);
 				// The unwind left this member's step groups open; close them so the members after it are
 				// recorded as its siblings instead of disappearing into the group that failed.
 				Stepper.EndOpenGroups(groupDepth);
@@ -2491,7 +2516,7 @@ namespace ICSharpCode.Decompiler.CSharp
 					// code does - and the body keeps the member's shape intact.
 					var errorBody = new BlockStatement();
 					var errorStatement = new EmptyStatement();
-					foreach (string line in GetErrorCommentLines(innerException))
+					foreach (string line in GetErrorCommentLines(decompilationError))
 					{
 						errorStatement.AddTrailingTrivia(new Comment(" " + line));
 					}
@@ -2501,7 +2526,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				else
 				{
 					// Definitions-only output has no body to put the error in.
-					foreach (string line in GetErrorCommentLines(innerException))
+					foreach (string line in GetErrorCommentLines(decompilationError))
 					{
 						entityDecl.AddLeadingTrivia(new Comment(" " + line));
 					}
@@ -2567,7 +2592,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				foreach (var attr in section.Attributes)
 				{
 					var symbol = attr.Type.GetSymbol();
-					if (symbol is ITypeDefinition td && td.FullTypeName == attributeType.GetTypeName())
+					if (symbol is ITypeDefinitionOrUnknown td && td.FullTypeName == attributeType.GetTypeName())
 					{
 						attr.Remove();
 						found = true;
@@ -2804,6 +2829,7 @@ namespace ICSharpCode.Decompiler.CSharp
 					int lastDot = property.Name.LastIndexOf('.');
 					propertyDecl.Name = property.Name.Substring(lastDot + 1);
 				}
+				FixPrivateVirtualMemberModifiers(propertyDecl, property);
 				FixParameterNames(propertyDecl);
 				Accessor? getter, setter;
 				if (propertyDecl is PropertyDeclaration)
@@ -2885,6 +2911,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				{
 					eventDecl.Name = ev.Name.Substring(lastDot + 1);
 				}
+				FixPrivateVirtualMemberModifiers(eventDecl, ev);
 				if (isAutomaticEvent)
 				{
 					AutoEventDecompiler.AddFieldLikeEventAttributes((EventDeclaration)eventDecl, typeSystemAstBuilder, ev, backingField!);
@@ -2919,6 +2946,16 @@ namespace ICSharpCode.Decompiler.CSharp
 			{
 				DecompilerEventSource.Log.DecompileMemberStop(ev, DecompiledMemberKind.Event);
 			}
+		}
+
+		static void FixPrivateVirtualMemberModifiers(EntityDeclaration declaration, IMember member)
+		{
+			if (member.Accessibility != Accessibility.Private || member.DeclaringType.Kind == TypeKind.Interface)
+				return;
+			if (!member.IsVirtual && !member.IsAbstract && !member.IsOverride)
+				return;
+			declaration.Modifiers &= ~Modifiers.Private;
+			declaration.Modifiers |= Modifiers.Protected;
 		}
 
 		#region Sequence Points

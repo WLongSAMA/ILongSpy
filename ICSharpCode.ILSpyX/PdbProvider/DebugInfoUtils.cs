@@ -84,8 +84,41 @@ namespace ICSharpCode.ILSpyX.PdbProvider
 			}
 		}
 
+		public static IDebugInfoProvider? FromStream(PEFile module, Stream? stream, string pdbFileName)
+		{
+			if (stream == null)
+				return null;
+			if (IsWindowsPdb(stream))
+			{
+				stream.Dispose();
+				return null;
+			}
+			stream.Position = 0;
+			try
+			{
+				var provider = MetadataReaderProvider.FromPortablePdbStream(stream);
+				return new PortableDebugInfoProvider(module.FileName, provider, MetadataReaderOptions.Default, pdbFileName);
+			}
+			catch (Exception ex) when (ex is BadImageFormatException || ex is IOException || ex is ArgumentException)
+			{
+				stream.Dispose();
+				return null;
+			}
+		}
+
 		const string LegacyPDBPrefix = "Microsoft C/C++ MSF 7.00";
 		static readonly byte[] buffer = new byte[LegacyPDBPrefix.Length];
+
+		/// <summary>
+		/// True for a Windows (native MSF) PDB, false for a Portable PDB. Reads from the current
+		/// position and leaves the stream positioned after the signature.
+		/// </summary>
+		public static bool IsWindowsPdb(Stream stream)
+		{
+			var signature = new byte[LegacyPDBPrefix.Length];
+			return stream.Read(signature, 0, signature.Length) == signature.Length
+				&& System.Text.Encoding.ASCII.GetString(signature) == LegacyPDBPrefix;
+		}
 
 		static bool TryOpenPortablePdb(PEFile module,
 			[NotNullWhen(true)] out MetadataReaderProvider? provider,

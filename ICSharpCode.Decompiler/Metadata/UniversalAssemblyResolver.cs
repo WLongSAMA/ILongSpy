@@ -26,6 +26,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -499,28 +500,32 @@ namespace ICSharpCode.Decompiler.Metadata
 			switch (decompilerRuntime)
 			{
 				case DecompilerRuntime.Mono:
-					framework_dir = Path.GetDirectoryName(typeof(object).Module.FullyQualifiedName)!;
+					framework_dir = GetRuntimeDirectory();
 					framework_dirs = new[] { framework_dir, Path.Combine(framework_dir, "Facades") };
 					break;
 				case DecompilerRuntime.NETCoreApp:
-					string windir;
+					string? windir = null;
 					try
 					{
 						windir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-						if (string.IsNullOrEmpty(windir))
-						{
-							goto default;
-						}
 					}
 					catch (PlatformNotSupportedException)
 					{
-						goto default;
 					}
-					framework_dir = Path.Combine(windir, "Microsoft.NET", "Framework64", "v4.0.30319");
+					if (string.IsNullOrEmpty(windir))
+					{
+						// Hosts without a .NET Framework installation (Linux, macOS): the facades in
+						// the shared framework stand in for the framework directory.
+						framework_dir = GetSharedFrameworkDirectory() ?? GetRuntimeDirectory();
+					}
+					else
+					{
+						framework_dir = Path.Combine(windir, "Microsoft.NET", "Framework64", "v4.0.30319");
+					}
 					framework_dirs = new[] { framework_dir };
 					break;
 				default:
-					framework_dir = Path.GetDirectoryName(typeof(object).Module.FullyQualifiedName)!;
+					framework_dir = GetRuntimeDirectory();
 					framework_dirs = new[] { framework_dir };
 					break;
 			}
@@ -556,11 +561,12 @@ namespace ICSharpCode.Decompiler.Metadata
 			{
 				// Hosts without a .NET Framework installation (e.g. Linux, macOS) have no GAC;
 				// the only system-wide assembly store there is the shared-framework directory
-				// of the runtime executing the decompiler. Search it as the last resort,
-				// regardless of the requested version (the runtime itself rolls forward in the
-				// same way). Without this, e.g. the type-forwards of a netstandard facade
-				// (pointing to a versioned System.Runtime) are unresolvable on such hosts.
-				string runtimeDir = Path.GetDirectoryName(typeof(object).Module.FullyQualifiedName)!;
+				// (the one running the decompiler, or for single-file and Native AOT hosts the
+				// installed one of the same major version). Search it as the last resort, regardless of the
+				// requested version (the runtime itself rolls forward in the same way). Without
+				// this, e.g. the type-forwards of a netstandard facade (pointing to a versioned
+				// System.Runtime) are unresolvable on such hosts.
+				string runtimeDir = GetSharedFrameworkDirectory() ?? GetRuntimeDirectory();
 				assembly = SearchDirectory(name, runtimeDir);
 				if (assembly != null)
 					return assembly;
@@ -623,6 +629,59 @@ namespace ICSharpCode.Decompiler.Metadata
 
 		internal static Version ZeroVersion = new Version(0, 0, 0, 0);
 
+		/// <summary>
+		/// The directory of the runtime executing the decompiler (the shared framework on .NET, the
+		/// framework directory on .NET Framework and Mono). Asking the runtime instead of taking the
+		/// directory of the corlib's file keeps this working in single-file and Native AOT apps, where
+		/// the corlib has no file path; there it is the application directory.
+		/// </summary>
+		internal static string GetRuntimeDirectory()
+		{
+			return RuntimeEnvironment.GetRuntimeDirectory().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+		}
+
+		/// <summary>
+		/// The directory whose framework facades (mscorlib, netstandard, System.*) stand in for
+		/// frameworks the host has no installation of. A managed host, framework-dependent or
+		/// self-contained, has them next to its running runtime. Single-file and Native AOT apps run
+		/// from their application directory, which holds no assemblies; for those it is the installed
+		/// dotnet/shared/Microsoft.NETCore.App/&lt;version&gt; directory of the same major version as
+		/// the host's runtime, which is what a framework-dependent build of the same app would run on,
+		/// or the newest installed one when that major is absent. Null when there is neither, in
+		/// which case callers keep probing the runtime directory.
+		/// </summary>
+		internal static string? GetSharedFrameworkDirectory() => sharedFrameworkDirectory.Value;
+
+		static readonly Lazy<string?> sharedFrameworkDirectory = new Lazy<string?>(FindSharedFrameworkDirectory);
+
+		static string? FindSharedFrameworkDirectory()
+		{
+			string runtimeDirectory = GetRuntimeDirectory();
+			if (HasFrameworkFacades(runtimeDirectory))
+				return runtimeDirectory;
+			string? dotnetRoot = DotNetCorePathFinder.FindDotNetExeDirectory();
+			return dotnetRoot == null ? null : FindSharedFramework(dotnetRoot, Environment.Version.Major);
+		}
+
+		internal static bool HasFrameworkFacades(string directory)
+		{
+			return File.Exists(Path.Combine(directory, "mscorlib.dll"));
+		}
+
+		internal static string? FindSharedFramework(string dotnetRoot, int? preferredMajor)
+		{
+			string basePath = Path.Combine(dotnetRoot, "shared", "Microsoft.NETCore.App");
+			if (!Directory.Exists(basePath))
+				return null;
+			var installed = new DirectoryInfo(basePath).GetDirectories()
+				.Select(DotNetCorePathFinder.ConvertToVersion)
+				.Where(v => v.version != null)
+				.OrderByDescending(v => v.version)
+				.ToList();
+			var match = installed.FirstOrDefault(v => v.version.Major == preferredMajor);
+			return (match.directory ?? installed.FirstOrDefault().directory)?.FullName;
+		}
+
 		string? GetCorlib(IAssemblyReference reference)
 		{
 			var version = reference.Version;
@@ -631,7 +690,7 @@ namespace ICSharpCode.Decompiler.Metadata
 			if (decompilerRuntime != DecompilerRuntime.NETCoreApp)
 			{
 				if (corlib.Version == version || IsSpecialVersionOrRetargetable(reference))
-					return typeof(object).Module.FullyQualifiedName;
+					return Path.Combine(GetRuntimeDirectory(), corlib.Name + ".dll");
 			}
 
 			if (reference.PublicKeyToken == null)
@@ -659,6 +718,11 @@ namespace ICSharpCode.Decompiler.Metadata
 			return null;
 		}
 
+		// The corlib lookups below are one step of the chain in ResolveInternal, which goes on with
+		// the GAC, the 4.0 framework directory and the shared framework of the running .NET and
+		// ends in a ResolutionException when throwOnError is set. A version or a host (Linux,
+		// macOS) they have no directory for therefore yields null rather than an exception, so the
+		// remaining steps still get their turn.
 		string? GetMscorlibBasePath(Version version, string? publicKeyToken)
 		{
 			string? GetSubFolderForVersion()
@@ -674,8 +738,6 @@ namespace ICSharpCode.Decompiler.Metadata
 					case 4:
 						return "v4.0.30319";
 					default:
-						if (throwOnError)
-							throw new NotSupportedException("Version not supported: " + version);
 						return null;
 				}
 			}
@@ -711,14 +773,12 @@ namespace ICSharpCode.Decompiler.Metadata
 				}
 			}
 
-			if (throwOnError)
-				throw new NotSupportedException("Version not supported: " + version);
 			return null;
 		}
 
 		string? GetMonoMscorlibBasePath(Version version)
 		{
-			var path = Directory.GetParent(typeof(object).Module.FullyQualifiedName)!.Parent!.FullName;
+			var path = Directory.GetParent(GetRuntimeDirectory())!.FullName;
 			if (version.Major == 1)
 				path = Path.Combine(path, "1.0");
 			else if (version.Major == 2)
@@ -731,11 +791,7 @@ namespace ICSharpCode.Decompiler.Metadata
 			else if (version.Major == 4)
 				path = Path.Combine(path, "4.0");
 			else
-			{
-				if (throwOnError)
-					throw new NotSupportedException("Version not supported: " + version);
 				return null;
-			}
 			return path;
 		}
 
@@ -781,10 +837,7 @@ namespace ICSharpCode.Decompiler.Metadata
 
 		static string GetCurrentMonoGac()
 		{
-			return Path.Combine(
-				Directory.GetParent(
-					Path.GetDirectoryName(typeof(object).Module.FullyQualifiedName)!)!.FullName,
-				"gac");
+			return Path.Combine(Directory.GetParent(GetRuntimeDirectory())!.FullName, "gac");
 		}
 
 		public static string? GetAssemblyInGac(IAssemblyReference reference)

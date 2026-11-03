@@ -4,7 +4,7 @@
     <!-- Windows-targeted TFM unlocks Microsoft.DiaSymReader (native COM) + System.Windows
          registry APIs without conditional package gates. EnableWindowsTargeting lets the
          build satisfy the -windows reference assemblies on non-Windows OSes via the
-         cross-targeting pack, so `dotnet build ILSpy.sln` succeeds on Linux/macOS; the
+         cross-targeting pack, so `dotnet build ILSpy.slnx` succeeds on Linux/macOS; the
          tests still only execute on Windows because the binaries P/Invoke into Win32. -->
     <TargetFramework>net11.0-windows</TargetFramework>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
@@ -49,13 +49,6 @@
          build .resources fixtures with typed serialized-object entries (NRBF-wrapped
          ImageListStreamer blobs) without depending on the obsolete BinaryFormatter. -->
     <PackageReference Include="System.Resources.Extensions" />
-
-    <!-- Windows-only native packages that the matching ILSpy commands gate
-         behind `Debug + IsOSPlatform(Windows)`. Available unconditionally here because
-         the project itself only builds on Windows. -->
-    <PackageReference Include="Microsoft.DiaSymReader.Converter.Xml" />
-    <PackageReference Include="Microsoft.DiaSymReader" />
-    <PackageReference Include="Microsoft.DiaSymReader.Native" />
   </ItemGroup>
 
   <ItemGroup>

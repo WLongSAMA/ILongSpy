@@ -707,12 +707,14 @@ namespace ICSharpCode.Decompiler.CSharp
 				&& IsRecordType(method.Parameters[0].Type);
 		}
 
-		private bool IsAllowedAttribute(IAttribute attribute)
+		private bool IsAllowedAttribute(IEntity owner, IAttribute attribute)
 		{
 			switch (attribute.AttributeType.ReflectionName)
 			{
 				case "System.Runtime.CompilerServices.CompilerGeneratedAttribute":
 					return true;
+				case "System.Diagnostics.CodeAnalysis.SetsRequiredMembersAttribute":
+					return owner is IMethod { IsConstructor: true };
 				default:
 					return false;
 			}
@@ -726,7 +728,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				leave IL_0000 (nop)
 			 */
 			Debug.Assert(method.IsConstructor && method.Parameters.Count == 1);
-			if (method.GetAttributes().Any(attr => !IsAllowedAttribute(attr)) || method.GetReturnTypeAttributes().Any())
+			if (method.GetAttributes().Any(attr => !IsAllowedAttribute(method, attr)) || method.GetReturnTypeAttributes().Any())
 				return false;
 			if (method.Accessibility != Accessibility.Protected && (!isSealed || method.Accessibility != Accessibility.Private))
 				return false;
@@ -827,7 +829,7 @@ namespace ICSharpCode.Decompiler.CSharp
 			if (!(body.Instructions.Single() is Leave leave))
 				return false;
 			// leave IL_0000 (call GetTypeFromHandle(ldtypetoken R))
-			if (!TransformExpressionTrees.MatchGetTypeFromHandle(leave.Value, out IType ty))
+			if (!TransformExpressionTrees.MatchGetTypeFromHandle(leave.Value, out var ty))
 				return false;
 			return IsRecordType(ty);
 		}
@@ -839,7 +841,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				return false;
 			if (!isSealed && !method.IsOverridable)
 				return false;
-			if (method.GetAttributes().Any(attr => !IsAllowedAttribute(attr)) || method.GetReturnTypeAttributes().Any())
+			if (method.GetAttributes().Any(attr => !IsAllowedAttribute(method, attr)) || method.GetReturnTypeAttributes().Any())
 				return false;
 			if (method.Accessibility != Accessibility.Protected && (!isSealed || method.Accessibility != Accessibility.Private))
 				return false;
@@ -1019,7 +1021,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				return false;
 			if (method.IsSealed)
 				return false;
-			if (method.GetAttributes().Any(attr => !IsAllowedAttribute(attr)) || method.GetReturnTypeAttributes().Any())
+			if (method.GetAttributes().Any(attr => !IsAllowedAttribute(method, attr)) || method.GetReturnTypeAttributes().Any())
 				return false;
 			var body = DecompileBody(method);
 			if (body == null)
@@ -1093,7 +1095,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				return false;
 			if (!isSealed && !method.IsOverridable)
 				return false;
-			if (method.GetAttributes().Any(attr => !IsAllowedAttribute(attr)) || method.GetReturnTypeAttributes().Any())
+			if (method.GetAttributes().Any(attr => !IsAllowedAttribute(method, attr)) || method.GetReturnTypeAttributes().Any())
 				return false;
 			if (orderedMembers == null)
 				return false;
@@ -1283,7 +1285,7 @@ namespace ICSharpCode.Decompiler.CSharp
 				return false;
 			if (!method.IsOverride || method.IsSealed)
 				return false;
-			if (method.GetAttributes().Any(attr => !IsAllowedAttribute(attr)) || method.GetReturnTypeAttributes().Any())
+			if (method.GetAttributes().Any(attr => !IsAllowedAttribute(method, attr)) || method.GetReturnTypeAttributes().Any())
 				return false;
 			if (orderedMembers == null)
 				return false;

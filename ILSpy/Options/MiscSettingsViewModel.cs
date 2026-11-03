@@ -16,9 +16,11 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+using System.Collections.Generic;
 using System.Xml.Linq;
 
 using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 
 using ICSharpCode.ILSpy.Properties;
 
@@ -34,6 +36,19 @@ namespace ICSharpCode.ILSpy.Options
 
 		[ObservableProperty]
 		MiscSettings settings = null!;
+
+		// Mirrors the labels in MiscSettingsPanel.axaml; OptionsTabTests checks the two stay in sync.
+		public IEnumerable<string> SearchableText => [
+			Resources.AllowMultipleInstances,
+			Resources.LoadPreviousAssembliesOnStartup,
+			Resources.ClearDocumentationLinkOrigins,
+		];
+
+		[RelayCommand]
+		void ClearDocumentationLinkOrigins()
+		{
+			Settings.ClearDocumentationLinkOrigins();
+		}
 
 		public void Load(SettingsService service)
 		{

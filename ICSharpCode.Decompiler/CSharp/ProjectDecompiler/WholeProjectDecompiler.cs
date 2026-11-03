@@ -33,6 +33,7 @@ using ICSharpCode.Decompiler.CSharp.OutputVisitor;
 using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.CSharp.Transforms;
 using ICSharpCode.Decompiler.DebugInfo;
+using ICSharpCode.Decompiler.Documentation;
 using ICSharpCode.Decompiler.Instrumentation;
 using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.Semantics;
@@ -92,7 +93,11 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 
 		public IAssemblyReferenceClassifier AssemblyReferenceClassifier { get; }
 
+		public IDecompilerTypeSystem? TypeSystem { get; private set; }
+
 		public IDebugInfoProvider? DebugInfoProvider { get; }
+
+		public IDocumentationProvider? DocumentationProvider { get; set; }
 
 		/// <summary>
 		/// The MSBuild ProjectGuid to use for the new project.
@@ -324,6 +329,7 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 		{
 			var decompiler = new CSharpDecompiler(ts, Settings);
 			decompiler.DebugInfoProvider = DebugInfoProvider;
+			decompiler.DocumentationProvider = DocumentationProvider;
 			decompiler.AstTransforms.Add(new EscapeInvalidIdentifiers());
 			decompiler.AstTransforms.Add(new RemoveCLSCompliantAttribute());
 			return decompiler;
@@ -355,6 +361,7 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 			var progressReporter = ProgressIndicator;
 			var progress = new DecompilationProgress { TotalUnits = files.Count, Title = "Exporting project..." };
 			DecompilerTypeSystem ts = new DecompilerTypeSystem(module, AssemblyResolver, Settings);
+			TypeSystem = ts;
 			var missingFiles = new ConcurrentBag<string>();
 			var workList = new HashSet<TypeDefinitionHandle>();
 			var processedTypes = new HashSet<TypeDefinitionHandle>();
@@ -737,10 +744,11 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 		/// (and into "&lt;AssemblyName&gt;.g.&lt;culture&gt;.resources" in satellite assemblies), keyed by
 		/// the item's relative path, lower-cased and URI-escaped: a folder named "My Images" becomes
 		/// "my%20images". Those escapes are not part of the name and have to be decoded before the
-		/// name is turned into a file name, otherwise the percent sign is sanitized away and
-		/// "my%20images/logo.png" lands in a directory called "my-20images".
+		/// name is displayed or turned into a file name, otherwise the percent sign is sanitized
+		/// away and "my%20images/logo.png" lands in a directory called "my-20images". No other
+		/// container has escaped names: a percent sign there is part of the entry name.
 		/// </summary>
-		static bool IsWpfGeneratedResourceContainer(string resourceName)
+		public static bool IsWpfGeneratedResourceContainer(string resourceName)
 		{
 			const string extension = ".resources";
 			if (!resourceName.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
@@ -963,7 +971,7 @@ namespace ICSharpCode.Decompiler.CSharp.ProjectDecompiler
 		/// </summary>
 		public static string CleanUpFileName(string text, string? extension)
 		{
-			if (string.IsNullOrEmpty(extension) || extension.StartsWith("."))
+			if (string.IsNullOrEmpty(extension) || extension.StartsWith(".", StringComparison.Ordinal))
 				text = $"{text}{extension}";
 			else
 				text = $"{text}.{extension}";

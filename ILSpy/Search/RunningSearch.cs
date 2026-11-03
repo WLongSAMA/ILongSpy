@@ -27,6 +27,8 @@ using System.Threading.Tasks;
 
 using Avalonia.Threading;
 
+using System.Runtime.CompilerServices;
+
 using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.ILSpyX;
@@ -61,6 +63,8 @@ namespace ICSharpCode.ILSpy.Search
 		readonly ISearchResultFactory resultFactory;
 		readonly ObservableCollection<SearchResult> sink;
 		readonly IComparer<SearchResult> sortComparer;
+		/// <summary>When set, only these assemblies are walked instead of the whole list.</summary>
+		readonly IReadOnlyList<LoadedAssembly>? onlyTheseAssemblies;
 		readonly ConcurrentQueue<SearchResult> queue = new();
 		readonly CancellationTokenSource cts = new();
 		DispatcherTimer? drainTimer;
@@ -77,8 +81,10 @@ namespace ICSharpCode.ILSpy.Search
 			ApiVisibility apiVisibility,
 			ISearchResultFactory resultFactory,
 			ObservableCollection<SearchResult> sink,
-			IComparer<SearchResult> sortComparer)
+			IComparer<SearchResult> sortComparer,
+			IReadOnlyList<LoadedAssembly>? onlyTheseAssemblies = null)
 		{
+			this.onlyTheseAssemblies = onlyTheseAssemblies;
 			this.assemblyList = assemblyList;
 			this.searchTerm = searchTerm;
 			this.mode = mode;
@@ -123,6 +129,27 @@ namespace ICSharpCode.ILSpy.Search
 			RaiseCompletedIfFirst();
 		}
 
+		/// <summary>
+		/// The assemblies to walk: the whole list, or only the ones this run was given. Results
+		/// already in the sink stay, so a run over newly added assemblies extends the list rather
+		/// than rebuilding it.
+		/// </summary>
+		async IAsyncEnumerable<LoadedAssembly> EnumerateAssemblies(
+			[EnumeratorCancellation] CancellationToken ct)
+		{
+			if (onlyTheseAssemblies != null)
+			{
+				foreach (var assembly in onlyTheseAssemblies)
+				{
+					ct.ThrowIfCancellationRequested();
+					yield return assembly;
+				}
+				yield break;
+			}
+			await foreach (var assembly in assemblyList.EnumerateAllAssemblies(ct).ConfigureAwait(false))
+				yield return assembly;
+		}
+
 		async Task RunSearch(CancellationToken ct)
 		{
 			try
@@ -134,7 +161,7 @@ namespace ICSharpCode.ILSpy.Search
 				// The per-assembly metadata walk is allocation-dominated, and 4 parallel
 				// producers fighting for the ConcurrentQueue + the resulting UI batching
 				// jitter end up slower than walking the assemblies one at a time.
-				await foreach (var assembly in assemblyList.EnumerateAllAssemblies(ct).ConfigureAwait(false))
+				await foreach (var assembly in EnumerateAssemblies(ct).ConfigureAwait(false))
 				{
 					if (ct.IsCancellationRequested)
 						break;
@@ -280,7 +307,8 @@ namespace ICSharpCode.ILSpy.Search
 		///       <c>c:</c>, <c>n:</c>, <c>r:</c> — set <see cref="SearchRequest.Mode"/>.</item>
 		/// <item><c>a:</c>, <c>af:</c>, <c>an:</c> — assembly mode + <see cref="AssemblySearchKind"/>.</item>
 		/// <item><c>@</c> (single character) — metadata-token mode.</item>
-		/// <item><c>inassembly:</c>, <c>innamespace:</c> — scope filters.</item>
+		/// <item><c>inassembly:</c>, <c>innamespace:</c> — scope filters. Their value is a filter
+		///       only and never becomes a keyword.</item>
 		/// <item><c>/.../</c> — regex match via <see cref="SearchRequest.RegEx"/>.</item>
 		/// <item>Double-quoted tokens — survive whitespace split, quotes stripped from the term.</item>
 		/// </list>
@@ -335,8 +363,22 @@ namespace ICSharpCode.ILSpy.Search
 					term = part;
 				}
 
-				// Term goes into keywords/regex regardless of prefix — the prefix only flips
-				// mode/scope, the keyword is still what gets matched.
+				// Scope prefixes are filters, not search terms: their value is matched against the
+				// assembly / namespace by IsInNamespaceOrAssembly, so it must not be added as a
+				// keyword (every entity name would then have to contain the assembly name) and it
+				// must not influence the full-name / generics heuristics below.
+				switch (prefix?.ToUpperInvariant())
+				{
+					case "INASSEMBLY":
+						request.InAssembly ??= term;
+						continue;
+					case "INNAMESPACE":
+						request.InNamespace ??= term;
+						continue;
+				}
+
+				// Term goes into keywords/regex regardless of a mode prefix — the prefix only
+				// flips the mode, the keyword is still what gets matched.
 				if (regex == null && term.StartsWith("/", StringComparison.Ordinal) && term.Length > 1)
 				{
 					// Wrapped /regex/ form. Closing slash is optional; if present, strip it.
@@ -368,14 +410,6 @@ namespace ICSharpCode.ILSpy.Search
 				{
 					case "@":
 						request.Mode = SearchMode.Token;
-						break;
-					case "INNAMESPACE":
-						if (request.InNamespace == null)
-							request.InNamespace = term;
-						break;
-					case "INASSEMBLY":
-						if (request.InAssembly == null)
-							request.InAssembly = term;
 						break;
 					case "A":
 						request.AssemblySearchKind = AssemblySearchKind.NameOrFileName;

@@ -48,35 +48,6 @@ namespace ICSharpCode.ILSpy.Tests;
 public class BrowseBackForwardCommandTests
 {
 	[AvaloniaTest]
-	public void BrowseBack_And_BrowseForward_Are_Registered_In_View_Menu_With_Alt_Arrow_Gestures()
-	{
-		// Task 26: BrowseBack / BrowseForward are MEF-exported main-menu commands so they appear
-		// in the View menu with InputGestureText that the menu builder turns into both a
-		// displayed gesture and a window-scoped HotKey. Verifies registration, parent menu,
-		// category, gesture text, and that the export carries the right resource header.
-
-		// Arrange — pull the registry directly; no window needed for metadata-only assertions.
-		var registry = AppComposition.Current.GetExport<MainMenuCommandRegistry>();
-
-		// Act — find the two exports by header.
-		var back = registry.Commands.SingleOrDefault(
-			c => c.Metadata.Header == nameof(Resources.Back)
-				&& c.Metadata.ParentMenuID == nameof(Resources._View));
-		var forward = registry.Commands.SingleOrDefault(
-			c => c.Metadata.Header == nameof(Resources.Forward)
-				&& c.Metadata.ParentMenuID == nameof(Resources._View));
-
-		// Assert — both exports exist, sit under View > Navigation, carry Alt+Left / Alt+Right.
-		back.Should().NotBeNull("BrowseBack must be exported as a View-menu command");
-		back!.Metadata.MenuCategory.Should().Be(nameof(Resources.Navigation));
-		back.Metadata.InputGestureText.Should().Be("Alt+Left");
-
-		forward.Should().NotBeNull("BrowseForward must be exported as a View-menu command");
-		forward!.Metadata.MenuCategory.Should().Be(nameof(Resources.Navigation));
-		forward.Metadata.InputGestureText.Should().Be("Alt+Right");
-	}
-
-	[AvaloniaTest]
 	public async Task BrowseBack_MenuItem_Forwards_CanExecute_And_Execute_To_DockWorkspace()
 	{
 		// The menu-attached BrowseBack command should be a thin wrapper over
@@ -86,13 +57,12 @@ public class BrowseBackForwardCommandTests
 		// Arrange — boot the window, load assemblies, expand Enumerable, capture two methods.
 		var (window, vm) = await TestHarness.BootAsync(3);
 
-		var typeNode = vm.AssemblyTreeModel.FindNode<TypeTreeNode>(
-			"System.Linq", "System.Linq", "System.Linq.Enumerable");
+		var typeNode = await vm.OpenSampleAsync(typeof(DecompileSample));
 		typeNode.IsExpanded = true;
 		var firstMethod = typeNode.Children.OfType<MethodTreeNode>()
-			.Single(m => m.MethodDefinition.Name == "AsEnumerable");
+			.Single(m => m.MethodDefinition.Name == nameof(DecompileSample.Describe));
 		var secondMethod = typeNode.Children.OfType<MethodTreeNode>()
-			.First(m => m.MethodDefinition.Name == "Empty");
+			.First(m => m.MethodDefinition.Name == nameof(DecompileSample.Twice));
 
 		// Locate the View > Back NativeMenuItem.
 		var nativeMenu = NativeMenu.GetMenu(window)
@@ -110,7 +80,6 @@ public class BrowseBackForwardCommandTests
 		vm.AssemblyTreeModel.SelectNode(firstMethod);
 		await vm.DockWorkspace.WaitForDecompiledTextAsync();
 		TestCapture.Step("first-method-decompiled");
-		await Task.Delay(600);
 		vm.AssemblyTreeModel.SelectNode(secondMethod);
 		await vm.DockWorkspace.WaitForDecompiledTextAsync();
 		TestCapture.Step("second-method-decompiled");
@@ -197,42 +166,65 @@ public class BrowseBackForwardCommandTests
 	}
 
 	[AvaloniaTest]
-	public async Task Browse_Back_Keeps_The_Active_Pane()
+	public async Task Browse_Back_Keeps_The_Keyboard_Focus_In_The_Editor()
 	{
-		// Back/Forward re-select a tree node and restore the tab's view state; the tab being
-		// navigated is already the active document, so the navigation must not move the active
-		// pane to it (WPF kept the current view focused). Exercises the command directly, which
-		// is what the Alt+Left key binding and the View menu invoke.
-		var (_, vm) = await TestHarness.BootAsync(3);
+		// Back/Forward select the tree node of the previous entry, which must only scroll it into
+		// view: WPF's SelectNodes never took the keyboard focus, so a user reading the code pane
+		// stays in the code pane after Alt+Left / Mouse4.
+		var (window, vm) = await TestHarness.BootAsync(3);
 		var (firstMethod, _) = await BuildTwoEntryHistoryAsync(vm);
-		vm.DockWorkspace.ShowToolPane(AssemblyTreeModel.PaneContentId);
-		var activePane = vm.DockWorkspace.Layout.FocusedDockable;
-		activePane.Should().NotBeNull("showing the assembly pane must make it the focused dockable");
+		var textArea = window.GetVisualDescendants().OfType<DecompilerTextView>().First().Editor.TextArea;
+		textArea.Focus();
+		Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+		var focusManager = TopLevel.GetTopLevel(window)!.FocusManager!;
+		focusManager.GetFocusedElement().Should().BeSameAs(textArea, "precondition: the editor must own the focus");
 
 		vm.DockWorkspace.NavigateBackCommand.Execute(null);
 
 		await Waiters.WaitForAsync(() => ReferenceEquals(vm.AssemblyTreeModel.SelectedItem, firstMethod),
 			description: "BrowseBack must navigate back one history entry");
 		await vm.DockWorkspace.WaitForDecompiledTextAsync();
-		vm.DockWorkspace.Layout.FocusedDockable.Should().BeSameAs(activePane,
-			"navigating back must not move the active pane to the editor");
+		await Waiters.WaitForIdleAsync();
+		focusManager.GetFocusedElement().Should().BeSameAs(textArea,
+			"navigating back must not move the keyboard focus to the tree row");
 	}
 
-	// Selects two methods of System.Linq.Enumerable with a pause in between so the history records
-	// them as two separate entries; returns them in selection order.
-	static async Task<(MethodTreeNode First, MethodTreeNode Second)> BuildTwoEntryHistoryAsync(MainWindowViewModel vm)
+	[AvaloniaTest]
+	public async Task Programmatic_Selection_Moves_The_Focus_Along_When_The_Tree_Owns_It()
 	{
-		var typeNode = vm.AssemblyTreeModel.FindNode<TypeTreeNode>(
-			"System.Linq", "System.Linq", "System.Linq.Enumerable");
-		typeNode.IsExpanded = true;
-		var firstMethod = typeNode.Children.OfType<MethodTreeNode>()
-			.Single(m => m.MethodDefinition.Name == "AsEnumerable");
-		var secondMethod = typeNode.Children.OfType<MethodTreeNode>()
-			.First(m => m.MethodDefinition.Name == "Empty");
+		// The scroll-only rule applies when the focus is elsewhere; a tree that already owns the
+		// keyboard focus follows the selection to the new row, so keyboard navigation inside the
+		// tree keeps working after a programmatic jump.
+		var (window, vm) = await TestHarness.BootAsync(3);
+		var (firstMethod, secondMethod) = await BuildTwoEntryHistoryAsync(vm);
+		var pane = await window.WaitForComponent<AssemblyListPane>();
+		var tree = await pane.WaitForComponent<ICSharpCode.ILSpy.Controls.TreeView.SharpTreeView>();
+		tree.FocusNode(secondMethod);
+		Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+		var focusManager = TopLevel.GetTopLevel(window)!.FocusManager!;
+		ReferenceEquals((focusManager.GetFocusedElement() as ICSharpCode.ILSpy.Controls.TreeView.SharpTreeViewItem)?.Node, secondMethod)
+			.Should().BeTrue("precondition: the tree row must own the focus");
 
 		vm.AssemblyTreeModel.SelectNode(firstMethod);
 		await vm.DockWorkspace.WaitForDecompiledTextAsync();
-		await Task.Delay(600);
+		await Waiters.WaitForAsync(
+			() => (focusManager.GetFocusedElement() as ICSharpCode.ILSpy.Controls.TreeView.SharpTreeViewItem)?.Node == firstMethod,
+			description: "the focus must follow the selection to the newly selected row");
+	}
+
+	// Selects two methods of the sample type so the history records them as two separate
+	// entries; returns them in selection order.
+	static async Task<(MethodTreeNode First, MethodTreeNode Second)> BuildTwoEntryHistoryAsync(MainWindowViewModel vm)
+	{
+		var typeNode = await vm.OpenSampleAsync(typeof(DecompileSample));
+		typeNode.IsExpanded = true;
+		var firstMethod = typeNode.Children.OfType<MethodTreeNode>()
+			.Single(m => m.MethodDefinition.Name == nameof(DecompileSample.Describe));
+		var secondMethod = typeNode.Children.OfType<MethodTreeNode>()
+			.First(m => m.MethodDefinition.Name == nameof(DecompileSample.Twice));
+
+		vm.AssemblyTreeModel.SelectNode(firstMethod);
+		await vm.DockWorkspace.WaitForDecompiledTextAsync();
 		vm.AssemblyTreeModel.SelectNode(secondMethod);
 		await vm.DockWorkspace.WaitForDecompiledTextAsync();
 		return (firstMethod, secondMethod);
@@ -258,5 +250,13 @@ public class BrowseBackForwardCommandTests
 
 		backItem.Gesture.Should().Be(KeyGesture.Parse("Alt+Left"));
 		forwardItem.Gesture.Should().Be(KeyGesture.Parse("Alt+Right"));
+
+		// Both exports sit in the View menu's Navigation category, which is what groups them
+		// behind a separator.
+		var registry = AppComposition.Current.GetExport<MainMenuCommandRegistry>();
+		registry.Commands
+			.Where(c => c.Metadata.Header is nameof(Resources.Back) or nameof(Resources.Forward))
+			.Should().HaveCount(2)
+			.And.OnlyContain(c => c.Metadata.MenuCategory == nameof(Resources.Navigation));
 	}
 }

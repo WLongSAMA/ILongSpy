@@ -254,5 +254,15 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 			// Explicit `unchecked` is necessary when casting oversized constant to nuint
 			return unchecked((nuint)9123123123123uL);
 		}
+
+		public nint ConditionalWithMixedBranchTypes(bool b, int i, nuint x, nint y)
+		{
+			return (b ? ((nint)i) : ((nint)x)) - y;
+		}
+
+		public nuint MixedSignXor(nint x, nuint y)
+		{
+			return (nuint)x ^ y;
+		}
 	}
 }

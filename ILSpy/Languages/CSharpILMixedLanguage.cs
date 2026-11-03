@@ -77,6 +77,9 @@ namespace ICSharpCode.ILSpy.Languages
 		{
 			CSharpDecompiler decompiler = new CSharpDecompiler(module, module.GetAssemblyResolver(), options.DecompilerSettings);
 			decompiler.CancellationToken = options.CancellationToken;
+			decompiler.DocumentationProvider = options.DecompilerSettings.ShowXmlDocumentation
+				? module.GetDocumentationProviderOrNull()
+				: null;
 			return decompiler;
 		}
 
@@ -181,13 +184,13 @@ namespace ICSharpCode.ILSpy.Languages
 				output.Write("// ");
 				output.BeginSpan(gray);
 				if (isSingleLine)
-					output.Write(text.Substring(0, startColumn).TrimStart());
+					output.Write(text.AsSpan(0, startColumn).TrimStart());
 				else
-					output.Write(text.Substring(0, startColumn));
+					output.Write(text.AsSpan(0, startColumn));
 				output.EndSpan();
-				output.Write(text.Substring(startColumn, endColumn - startColumn));
+				output.Write(text.AsSpan(startColumn, endColumn - startColumn));
 				output.BeginSpan(gray);
-				output.Write(text.Substring(endColumn));
+				output.Write(text.AsSpan(endColumn));
 				output.EndSpan();
 				output.WriteLine();
 			}

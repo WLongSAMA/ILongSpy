@@ -21,6 +21,7 @@ using System.ComponentModel;
 using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
+using System.Xml.Linq;
 
 using Avalonia.Headless.NUnit;
 using Avalonia.Threading;
@@ -59,15 +60,12 @@ public class DisplaySettingsReactionTests
 	public async Task Toggling_A_Decompiler_Output_Setting_Re_Decompiles_The_Active_Tab()
 	{
 		var (_, vm) = await TestHarness.BootAsync();
-		// Decompile a single small method rather than the whole Enumerable type: the full type
-		// takes >15 s in headless and times out WaitForDecompiledTextAsync under CI load. The
-		// re-decompile reaction under test fires on whatever the active tab shows, so one method
-		// exercises it just as well.
-		var typeNode = vm.AssemblyTreeModel.FindNode<TypeTreeNode>(
-			"System.Linq", "System.Linq", "System.Linq.Enumerable");
+		// The re-decompile reaction under test fires on whatever the active tab shows, so one
+		// small method exercises it just as well as a whole type.
+		var typeNode = await vm.OpenSampleAsync(typeof(DecompileSample));
 		typeNode.IsExpanded = true;
 		var method = typeNode.Children.OfType<MethodTreeNode>()
-			.First(m => m.MethodDefinition.Name == "Empty");
+			.First(m => m.MethodDefinition.Name == nameof(DecompileSample.Twice));
 		vm.AssemblyTreeModel.SelectNode(method);
 		var tab = await vm.DockWorkspace.WaitForDecompiledTextAsync();
 
@@ -92,6 +90,21 @@ public class DisplaySettingsReactionTests
 		decompileStarts.Should().BeGreaterThan(0,
 			"toggling a decompiler-output display setting must re-decompile the active tab "
 			+ "(the live Options page has no full-refresh-on-close to fall back on)");
+	}
+
+	[Test]
+	public void Show_Line_Numbers_Defaults_To_Off()
+	{
+		new DisplaySettings().ShowLineNumbers.Should().BeFalse();
+
+		var loaded = new DisplaySettings();
+		loaded.LoadFromXml(new XElement("DisplaySettings"));
+		loaded.ShowLineNumbers.Should().BeFalse("a missing attribute keeps the default");
+
+		var on = new DisplaySettings { ShowLineNumbers = true };
+		var reloaded = new DisplaySettings();
+		reloaded.LoadFromXml(on.SaveToXml());
+		reloaded.ShowLineNumbers.Should().BeTrue();
 	}
 
 	[Test]

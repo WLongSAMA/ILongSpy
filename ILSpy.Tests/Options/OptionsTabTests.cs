@@ -19,8 +19,13 @@
 using System.Linq;
 using System.Threading.Tasks;
 
+using Avalonia.Controls;
+using Avalonia.Controls.Documents;
+using Avalonia.Controls.Presenters;
 using Avalonia.Headless.NUnit;
+using Avalonia.Media;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 
 using AwesomeAssertions;
 
@@ -32,7 +37,6 @@ using ICSharpCode.ILSpy.Commands;
 using ICSharpCode.ILSpy.Docking;
 using ICSharpCode.ILSpy.Options;
 using ICSharpCode.ILSpy.TextView;
-using ICSharpCode.ILSpy.TreeNodes;
 using ICSharpCode.ILSpy.ViewModels;
 using ICSharpCode.ILSpy.Views;
 
@@ -92,7 +96,8 @@ public class OptionsTabTests
 		// document is still Options — so the user sees no visible change. The fix:
 		// ShowSelectedNode pulls focus back to MainTab whenever a tree-selection writes
 		// new content there.
-		var (_, vm) = await TestHarness.BootAsync(3);
+		var (_, vm) = await TestHarness.BootAsync();
+		var typeNode = await vm.OpenSampleAsync(typeof(DecompileSample));
 
 		// Open Options and confirm it's the active document.
 		AppComposition.Current.GetExport<MainMenuCommandRegistry>()
@@ -106,8 +111,6 @@ public class OptionsTabTests
 			"baseline: opening Options must make it the active document");
 
 		// Click a tree node — fires the same path as a real user mouse-click.
-		var typeNode = vm.AssemblyTreeModel.FindNode<TypeTreeNode>(
-			"System.Linq", "System.Linq", "System.Linq.Enumerable");
 		vm.AssemblyTreeModel.SelectNode(typeNode);
 		TestCapture.Step("tree-node-selected");
 
@@ -281,12 +284,10 @@ public class OptionsTabTests
 		TestCapture.Step("booted");
 
 		// Materialise a DecompilerTextView by selecting a node.
-		var typeNode = vm.AssemblyTreeModel.FindNode<TypeTreeNode>(
-			"System.Linq", "System.Linq", "System.Linq.Enumerable");
-		vm.AssemblyTreeModel.SelectNode(typeNode);
+		await vm.ShowSampleAsync(typeof(DecompileSample));
 		var view = await window.WaitForComponent<DecompilerTextView>();
 		var editor = await view.WaitForComponent<AvaloniaEdit.TextEditor>();
-		TestCapture.Step("enumerable-decompiled");
+		TestCapture.Step("sample-decompiled");
 
 		var originalSize = settings.DisplaySettings.SelectedFontSize;
 		var newSize = originalSize + 5;
@@ -309,16 +310,8 @@ public class OptionsTabTests
 		// pull focus back to MainTab and yank the user off the Options page they are editing.
 		var (_, vm) = await TestHarness.BootAsync(3);
 
-		// Show some decompiled content first, so there is a decompiler tab to refresh. Use a single
-		// small method, not the whole Enumerable type: the full type takes >15 s in headless and
-		// times out WaitForDecompiledTextAsync under CI load.
-		var typeNode = vm.AssemblyTreeModel.FindNode<TypeTreeNode>(
-			"System.Linq", "System.Linq", "System.Linq.Enumerable");
-		typeNode.IsExpanded = true;
-		var method = typeNode.Children.OfType<MethodTreeNode>()
-			.First(m => m.MethodDefinition.Name == "Empty");
-		vm.AssemblyTreeModel.SelectNode(method);
-		await vm.DockWorkspace.WaitForDecompiledTextAsync();
+		// Show some decompiled content first, so there is a decompiler tab to refresh.
+		await vm.ShowSampleAsync(typeof(DecompileSample));
 
 		// Open Options and confirm it is the active document.
 		AppComposition.Current.GetExport<MainMenuCommandRegistry>()
@@ -335,5 +328,192 @@ public class OptionsTabTests
 
 		documents.ActiveDockable.Should().BeSameAs(optionsTab,
 			"an output display setting must re-decompile in place, not switch the user off the focused tab");
+	}
+
+	/// <summary>Opens the Options tab and waits until it is laid out, which is the earliest a
+	/// user could start typing into its search box.</summary>
+	static async Task<(OptionsPageModel model, MainWindow window)> OpenOptionsAsync()
+	{
+		var window = AppComposition.Current.GetExport<MainWindow>();
+		window.Show();
+		AppComposition.Current.GetExport<MainMenuCommandRegistry>()
+			.GetCommand(nameof(Resources._Options)).Execute(null);
+		var vm = (MainWindowViewModel)window.DataContext!;
+		var model = (OptionsPageModel)vm.DockWorkspace.Documents!.VisibleDockables!
+			.OfType<ContentTabPage>().First(t => t.Content is OptionsPageModel).Content!;
+		// The Options tab is a session singleton, so a previous test's search text would leak in.
+		model.SearchText = string.Empty;
+		await Waiters.WaitForIdleAsync();
+		return (model, window);
+	}
+
+	[AvaloniaTest]
+	public async Task SearchText_Narrows_VisiblePages_To_Pages_With_A_Hit()
+	{
+		// "tab strip" only appears in the Display panel's tab-options labels. Clearing the text
+		// restores every page in MEF order.
+		var (model, window) = await OpenOptionsAsync();
+
+		model.SearchText = "tab strip";
+		await Waiters.WaitForIdleAsync();
+		TestCapture.Step("searched-tab-strip");
+		model.VisiblePages.Select(p => p.Title).Should().Equal(Resources.Display);
+
+		// The hits sit in the "Tab options" group near the bottom of the Display panel, which
+		// starts out scrolled to the top: the first hit must have been scrolled into view.
+		var scrollViewer = window.GetVisualDescendants().OfType<Options.Panels.DisplaySettingsPanel>().Single()
+			.GetVisualDescendants().OfType<ScrollViewer>().First();
+		scrollViewer.Offset.Y.Should().BeGreaterThan(0, "the first hit must be scrolled into view");
+
+		model.SearchText = string.Empty;
+		model.VisiblePages.Should().Equal(model.Pages);
+	}
+
+	[AvaloniaTest]
+	public async Task SearchText_Moves_Selection_When_Selected_Page_Drops_Out()
+	{
+		var (model, _) = await OpenOptionsAsync();
+		model.SelectedPage = model.Pages[0];
+		model.SelectedPage!.Title.Should().Be(Resources.Decompiler);
+
+		model.SearchText = Resources.ShowLineNumbers;
+		TestCapture.Step("searched-show-line-numbers");
+
+		model.SelectedPage!.Title.Should().Be(Resources.Display,
+			"the Decompiler page has no hit, so the first page that does must become selected");
+
+		// Clearing keeps whatever is selected rather than jumping back.
+		model.SearchText = string.Empty;
+		model.SelectedPage!.Title.Should().Be(Resources.Display);
+	}
+
+	[AvaloniaTest]
+	public async Task Decompiler_Page_Narrows_Its_Groups_To_Matching_Items()
+	{
+		var (model, window) = await OpenOptionsAsync();
+		var decompilerPage = (DecompilerSettingsViewModel)model.Pages[0];
+		var fullCount = decompilerPage.Settings.Sum(g => g.Settings.Length);
+
+		model.SearchText = "using";
+		await Waiters.WaitForIdleAsync();
+		TestCapture.Step("searched-using");
+
+		var shown = decompilerPage.Settings.SelectMany(g => g.Settings).ToList();
+		shown.Should().NotBeEmpty();
+		shown.Should().OnlyContain(s => s.Description.Contains("using", System.StringComparison.CurrentCultureIgnoreCase));
+		shown.Should().Contain(s => s.Property.Name == nameof(ICSharpCode.Decompiler.DecompilerSettings.UsingDeclarations));
+		decompilerPage.Settings.Should().OnlyContain(g => g.Settings.Length > 0,
+			"a category with no matching item must not be shown as an empty group");
+
+		// The narrowed list is rebuilt into fresh item containers; the highlight pass must
+		// still reach them.
+		var usingLabel = window.GetVisualDescendants().OfType<TextBlock>()
+			.Single(t => t.Text == shown.First(s => s.Property.Name == nameof(ICSharpCode.Decompiler.DecompilerSettings.UsingDeclarations)).Description);
+		var usingHighlight = usingLabel.Inlines!.OfType<Run>().Single(run => run.Classes.Contains("search-hit"));
+		usingHighlight.FontWeight.Should().Be(FontWeight.Bold, "the search-hit style must actually render");
+
+		// Reset while narrowed rebuilds the list but keeps the narrowing.
+		model.SelectedPage = decompilerPage;
+		model.ResetCurrentPageCommand.Execute(null);
+		decompilerPage.Settings.SelectMany(g => g.Settings).Count().Should().Be(shown.Count);
+
+		model.SearchText = string.Empty;
+		decompilerPage.Settings.Sum(g => g.Settings.Length).Should().Be(fullCount);
+	}
+
+	[AvaloniaTest]
+	public async Task No_Match_Hides_Every_Page_And_Clears_Selection()
+	{
+		var (model, _) = await OpenOptionsAsync();
+
+		model.SearchText = "zzzz-no-such-setting";
+		TestCapture.Step("searched-nonsense");
+
+		model.HasNoMatches.Should().BeTrue();
+		model.VisiblePages.Should().BeEmpty();
+		model.SelectedPage.Should().BeNull();
+
+		model.SearchText = string.Empty;
+		model.HasNoMatches.Should().BeFalse();
+		model.SelectedPage.Should().NotBeNull("clearing a no-match search must bring a page back");
+	}
+
+	[AvaloniaTest]
+	public async Task Matching_Labels_Get_The_SearchHit_Class_And_Others_Do_Not()
+	{
+		var (model, window) = await OpenOptionsAsync();
+		model.SelectedPage = model.Pages[1];
+		await Waiters.WaitForIdleAsync();
+
+		model.SearchText = Resources.ShowLineNumbers;
+		await Waiters.WaitForIdleAsync();
+		TestCapture.Step("display-page-highlighted");
+
+		var labels = window.GetVisualDescendants().OfType<TextBlock>().ToList();
+		var showLineNumbers = labels.Single(t => t.Text == Resources.ShowLineNumbers);
+		var lineNumberHighlight = showLineNumbers.Inlines!.OfType<Run>().Single(run => run.Classes.Contains("search-hit"));
+		lineNumberHighlight.FontWeight.Should().Be(FontWeight.Bold, "the search-hit style must actually render");
+		labels.Single(t => t.Text == Resources.EnableWordWrap).Classes.Should().NotContain("search-hit");
+
+		model.SearchText = string.Empty;
+		await Waiters.WaitForIdleAsync();
+		// Same TextBlock instance: clearing must not rebuild the panel, only drop the class.
+		TopLevel.GetTopLevel(showLineNumbers).Should().BeSameAs(window,
+			"clearing the search must leave the shown panel in place");
+		showLineNumbers.Inlines.Should().BeNull("clearing the search must remove the inline highlight");
+		showLineNumbers.Classes.Should().NotContain("search-hit",
+			"clearing the search must remove the highlight");
+	}
+
+	[AvaloniaTest]
+	public async Task Search_Highlights_Only_The_Matching_Substring()
+	{
+		var (model, window) = await OpenOptionsAsync();
+		model.SelectedPage = model.Pages.Single(page => page.Title == Resources.Decompiler);
+		await Waiters.WaitForIdleAsync();
+
+		model.SearchText = "loa";
+		await Waiters.WaitForIdleAsync();
+
+		var label = window.GetVisualDescendants().OfType<TextBlock>()
+			.Single(textBlock => textBlock.Text == Resources.DecompilerSettings_AutoLoadAssemblyReferences);
+		label.Inlines.Should().NotBeNull();
+		label.Inlines!.OfType<Run>().Select(run => run.Text).Should()
+			.Equal("Automatically ", "loa", "d assembly references");
+		label.Inlines.OfType<Run>().Single(run => run.Text == "loa").Classes.Should().Contain("search-hit");
+		label.Inlines.OfType<Run>().Single(run => run.Text == "loa").FontWeight.Should().Be(FontWeight.Bold);
+		label.Classes.Should().NotContain("search-hit", "the complete label must not be highlighted");
+	}
+
+	[AvaloniaTest]
+	public async Task SearchableText_Covers_Every_Label_The_Panel_Shows()
+	{
+		// Display and Misc list their labels by hand, so this is what catches a checkbox added to
+		// the XAML without a matching SearchableText entry. The Decompiler page derives its list
+		// from the same viewmodel the panel binds to, so it passes by construction.
+		var (model, window) = await OpenOptionsAsync();
+
+		foreach (var page in model.Pages)
+		{
+			model.SelectedPage = page;
+			await Waiters.WaitForIdleAsync();
+			TestCapture.Step("page-" + page.Title);
+
+			var tabContent = window.GetVisualDescendants().OfType<TabControl>().Single()
+				.GetVisualDescendants().OfType<ContentPresenter>()
+				.Single(p => p.Name == "PART_SelectedContentHost");
+			var labels = tabContent.GetVisualDescendants().OfType<TextBlock>()
+				// Values inside pickers and the font-preview sentence are not setting labels.
+				.Where(t => t.Name != "FontPreview"
+					&& !t.GetVisualAncestors().Any(a => a is ComboBox || a is NumericUpDown))
+				.Select(t => t.Text)
+				.Where(t => !string.IsNullOrWhiteSpace(t))
+				.Distinct()
+				.ToList();
+
+			labels.Should().NotBeEmpty("the {0} panel must have materialised", page.Title);
+			labels.Should().BeSubsetOf(page.SearchableText,
+				"every label the {0} panel shows must be searchable", page.Title);
+		}
 	}
 }

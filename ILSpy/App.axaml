@@ -43,6 +43,9 @@
                     <!-- Translucent selection so selected text keeps its syntax colours (the
                          TextArea style leaves SelectionForeground unset). -->
                     <SolidColorBrush x:Key="ILSpy.EditorSelectionBrush" Color="#007ACC" Opacity="0.3" />
+                    <SolidColorBrush x:Key="ILSpy.EditorSearchResultsBrush" Color="#FFD54F" />
+                    <SolidColorBrush x:Key="ILSpy.SymbolHighlightBrush" Color="#87CEFA" Opacity="0.31" />
+                    <SolidColorBrush x:Key="ILSpy.SymbolDefinitionHighlightBrush" Color="#87CEFA" Opacity="0.50" />
                     <SolidColorBrush x:Key="ILSpy.EditorWaitAdornerBackground" Color="#80FFFFFF" />
                     <!-- Clickable text: About-page and decompiler-view hyperlinks (AvaloniaEdit's
                          TextView.LinkTextForegroundBrush, see the style below) and the metadata
@@ -116,6 +119,9 @@
                     <!-- Brighter, slightly stronger so the translucent selection still reads on the
                          dark editor background. -->
                     <SolidColorBrush x:Key="ILSpy.EditorSelectionBrush" Color="#3794FF" Opacity="0.35" />
+                    <SolidColorBrush x:Key="ILSpy.EditorSearchResultsBrush" Color="#665500" />
+                    <SolidColorBrush x:Key="ILSpy.SymbolHighlightBrush" Color="#2F6F9F" Opacity="0.50" />
+                    <SolidColorBrush x:Key="ILSpy.SymbolDefinitionHighlightBrush" Color="#3794FF" Opacity="0.45" />
                     <SolidColorBrush x:Key="ILSpy.EditorWaitAdornerBackground" Color="#A0000000" />
                     <SolidColorBrush x:Key="ILSpy.LinkForeground" Color="#4DA6FF" />
                     <SolidColorBrush x:Key="ILSpy.ToolbarBackground" Color="#2D2D30" />
@@ -298,9 +304,22 @@
         <Style Selector="MenuItem /template/ TextBlock#PART_InputGestureText">
             <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
+        <!-- TabItem: the Simple theme paints tab headers with ThemeForegroundLowBrush, a fixed
+             #808080 that does not vary with the theme variant, and hovers them with
+             ThemeControlHighlightMidBrush, which is #828282 in Dark - text and fill are then
+             the same gray. Route the text through the window foreground and hover with a
+             translucent neutral that reads on both canvases and stays distinct from the
+             blue selected fill. -->
+        <Style Selector="TabItem">
+            <Setter Property="Foreground" Value="{DynamicResource ILSpy.WindowForeground}" />
+        </Style>
+        <Style Selector="TabItem:pointerover:not(:selected) /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#33808080" />
+        </Style>
         <Style Selector="ContextMenu">
             <Setter Property="Background" Value="{DynamicResource ILSpy.MenuBackground}" />
             <Setter Property="Foreground" Value="{DynamicResource ILSpy.MenuForeground}" />
+            <Setter Property="Cursor" Value="Arrow" />
         </Style>
         <Style Selector="MenuFlyoutPresenter">
             <Setter Property="Background" Value="{DynamicResource ILSpy.MenuBackground}" />

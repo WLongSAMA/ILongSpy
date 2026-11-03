@@ -18,6 +18,7 @@
 
 #:project ../ICSharpCode.Decompiler/ICSharpCode.Decompiler.csproj
 #:package NuGet.Packaging@*
+#:package Mono.Cecil@0.11.6
 #:property PublishAot=false
 
 // nugetfuzz: downloads nuget packages (sequentially), resolves their dependency
@@ -25,10 +26,25 @@
 // Microsoft.NETFramework.ReferenceAssemblies packages), then decompiles every
 // assembly type-by-type and reports Debug.Assert failures / exceptions.
 //
-// usage: dotnet run nugetfuzz.cs -- [--download-only] <PackageId[@Version]>... | @packagelist.txt
+// With --pdb it instead generates a portable PDB for each assembly and checks it: Mono.Cecil
+// (the consumer ILLink uses) has to be able to read every method body through it, and the PDB
+// metadata has to satisfy a structural lint. --pdb-lint runs the same checks against a PDB that
+// already exists next to the assembly, which is how the lint is calibrated: it must report
+// nothing at all for a PDB the C# compiler wrote.
+//
+// --jobs <N> processes up to N packages concurrently (type sweep and --download-only only; the
+// output of concurrent packages interleaves).
+//
+// usage: dotnet run nugetfuzz.cs -- [--download-only] [--jobs <N>] [--corpus-out <file>] <PackageId[@Version]>... | @packagelist.txt
+//        dotnet run nugetfuzz.cs -- [--pdb] <PackageId[@Version]>... | @packagelist.txt
+//        dotnet run nugetfuzz.cs -- --pdb-lint <file.dll|dir>... | @corpus.txt
 
 using System.Diagnostics;
+using System.Globalization;
 using System.IO.Compression;
+using System.Reflection.Metadata;
+using System.Reflection.Metadata.Ecma335;
+using System.Reflection.PortableExecutable;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
@@ -36,7 +52,15 @@ using System.Text.RegularExpressions;
 
 using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.CSharp;
+using ICSharpCode.Decompiler.CSharp.OutputVisitor;
+using ICSharpCode.Decompiler.CSharp.Syntax;
+using ICSharpCode.Decompiler.DebugInfo;
 using ICSharpCode.Decompiler.Metadata;
+
+// Cecil is used through aliases: its MethodDefinition/SequencePoint/MethodBody names collide with
+// System.Reflection.Metadata's and the decompiler's, and every one of the three is used here.
+using Cecil = Mono.Cecil;
+using CecilCil = Mono.Cecil.Cil;
 
 using NuGet.Frameworks;
 using NuGet.Packaging;
@@ -64,7 +88,8 @@ var installedTfm = NuGetFramework.Parse($"net{Environment.Version.Major}.{Enviro
 var net48 = NuGetFramework.Parse("net48");
 var reducer = new FrameworkReducer();
 var failures = new Dictionary<string, Finding>();
-int assemblyCount = 0, typeCount = 0;
+var formatting = new DecompilerSettings().CSharpFormattingOptions;
+int assemblyCount = 0, typeCount = 0, pdbChecked = 0, pdbSkipped = 0;
 long charCount = 0, refsResolved = 0, refsTotal = 0;
 bool verbose = Environment.GetEnvironmentVariable("NUGETFUZZ_VERBOSE") != null;
 var dumpDir = Environment.GetEnvironmentVariable("NUGETFUZZ_DUMP");
@@ -72,6 +97,9 @@ if (dumpDir != null)
 	Directory.CreateDirectory(dumpDir);
 var versionCache = new Dictionary<string, List<NuGetVersion>>();
 var noSuchPackage = new HashSet<string>();
+// Guards failures, the counters, versionCache, noSuchPackage and corpusDirs when packages run concurrently.
+var stateLock = new object();
+var downloadGate = new SemaphoreSlim(1);
 
 // Legacy framework-satellite assemblies whose nuget package id differs from the assembly name.
 var assemblyPackageAlias = new Dictionary<string, string> {
@@ -92,6 +120,18 @@ var assemblyPackageAlias = new Dictionary<string, string> {
 
 const string NetCoreRefPack = "Microsoft.NETCore.App.Ref";
 
+// Assemblies that exist only in a real .NET Framework installation: the GAC-only internals
+// such as SMDiagnostics and System.ServiceModel.Internals, which ship in no reference-assembly
+// package and no nuget package at all, so a reference to them resolves nowhere. Windows has
+// them in place under %WINDIR%; elsewhere NUGETFUZZ_FRAMEWORKS points at a copy of the same
+// tree (see TestTools/README.md). Used as a last resort, after the ref packs, so a metadata-only
+// reference assembly is still preferred over the implementation assembly.
+var localFrameworkDirs = FindLocalFrameworkDirs();
+if (localFrameworkDirs.Count > 0)
+	Console.WriteLine($"local frameworks: {localFrameworkDirs.Count} directories, first {localFrameworkDirs[0]}");
+else if (!OperatingSystem.IsWindows())
+	Console.WriteLine("local frameworks: none (set NUGETFUZZ_FRAMEWORKS to a .NET Framework tree)");
+
 // WPF/WinForms assemblies of .NET (Core) live in the WindowsDesktop ref pack, not on nuget.
 var windowsDesktopPrefixes = new[] {
 	"PresentationCore", "PresentationFramework", "WindowsBase", "System.Xaml",
@@ -111,40 +151,112 @@ if (args is ["--report", var ledgerPath, ..])
 // Populates the cache without decompiling: the sweep is the slow part, and a corpus
 // only needs the assemblies on disk.
 var downloadOnly = args.Contains("--download-only");
-var packages = args
-	.Where(a => a != "--download-only")
+string? corpusOut = null;
+// Generates a PDB per assembly and checks it, instead of decompiling type by type. The two are
+// alternatives rather than additions: a whole-assembly PDB is far more expensive than the type
+// sweep, and they answer different questions.
+var pdbMode = args.Contains("--pdb");
+// Checks the PDB the assembly already ships with. Calibration, not a sweep.
+var pdbLint = args.Contains("--pdb-lint");
+var packageArgs = new List<string>();
+int jobs = 1;
+for (int i = 0; i < args.Length; i++)
+{
+	if (args[i] is "--jobs" or "-j" || args[i].StartsWith("-j") && !args[i].StartsWith("--"))
+	{
+		// Accepts "--jobs 6", "-j 6" and "-j6".
+		var value = args[i] is "--jobs" or "-j" ? (++i < args.Length ? args[i] : "") : args[i][2..];
+		if (!int.TryParse(value, out jobs) || jobs < 1)
+		{
+			Console.Error.WriteLine("--jobs requires a positive number");
+			return 1;
+		}
+	}
+	else if (args[i] == "--corpus-out")
+	{
+		if (++i == args.Length || args[i].StartsWith("--"))
+		{
+			Console.Error.WriteLine("--corpus-out requires a path");
+			return 1;
+		}
+		corpusOut = args[i];
+	}
+	else if (!args[i].StartsWith("--"))
+	{
+		packageArgs.Add(args[i]);
+	}
+}
+if (corpusOut != null && !downloadOnly)
+{
+	Console.Error.WriteLine("--corpus-out requires --download-only");
+	return 1;
+}
+if (jobs > 1 && (pdbMode || pdbLint))
+{
+	Console.Error.WriteLine("--jobs cannot be combined with --pdb or --pdb-lint");
+	return 1;
+}
+// Findings first hit by the assembly being decompiled. They get their reference context
+// once it is done, because the resolver keeps discovering references until then.
+// Async-local so each concurrently processed package has its own list.
+var pendingContextHolder = new AsyncLocal<List<string>>();
+List<string> PendingContext() => pendingContextHolder.Value ??= new List<string>();
+var arguments = packageArgs
 	.SelectMany(a => a.StartsWith('@') ? File.ReadAllLines(a[1..]) : new[] { a })
 	.Select(l => l.Trim())
 	.Where(l => l.Length > 0 && !l.StartsWith('#'))
 	.ToList();
-if (packages.Count == 0)
+if (arguments.Count == 0)
 {
-	Console.Error.WriteLine("usage: nugetfuzz [--download-only] <PackageId[@Version]>... | @packagelist.txt");
+	Console.Error.WriteLine("usage: nugetfuzz [--download-only] [--jobs <N>] [--corpus-out <file>] <PackageId[@Version]>... | @packagelist.txt");
+	Console.Error.WriteLine("       nugetfuzz [--pdb] <PackageId[@Version]>... | @packagelist.txt");
+	Console.Error.WriteLine("       nugetfuzz --pdb-lint <file.dll|dir>... | @corpus.txt");
 	Console.Error.WriteLine("       nugetfuzz --report <ledger.jsonl> [out.html]");
 	return 1;
 }
 
-foreach (var spec in packages)
+var corpusDirs = new List<string>();
+if (pdbLint)
 {
-	try
+	foreach (var dll in ExpandDlls(arguments))
+		LintExistingPdb(dll);
+}
+else
+{
+	await Parallel.ForEachAsync(arguments, new ParallelOptions { MaxDegreeOfParallelism = jobs }, async (spec, _) =>
 	{
-		await ProcessPackage(spec);
-	}
-	catch (Exception ex) when (
-		ex is InvalidOperationException && ex.Message.Contains("not found")
-		|| ex is InvalidDataException)
-	{
-		// Deleted/delisted package or corrupt nupkg on nuget.org - not a decompiler issue.
-		Console.WriteLine($"  skip {spec}: {ex.Message}");
-	}
-	catch (Exception ex)
-	{
-		Report(spec, "-", "-", ex);
-	}
+		try
+		{
+			await ProcessPackage(spec);
+		}
+		catch (Exception ex) when (
+			ex is InvalidOperationException && ex.Message.Contains("not found")
+			|| ex is InvalidDataException)
+		{
+			// Deleted/delisted package or corrupt nupkg on nuget.org - not a decompiler issue.
+			Console.WriteLine($"  skip {spec}: {ex.Message}");
+		}
+		catch (Exception ex)
+		{
+			Report(spec, "-", "-", ex);
+		}
+	});
+}
+
+if (corpusOut != null)
+{
+	var fullPath = Path.GetFullPath(corpusOut);
+	var dirs = corpusDirs.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+	Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+	File.WriteAllLines(fullPath, dirs);
+	Console.WriteLine($"{dirs.Count} lib directories -> {fullPath}");
 }
 
 Console.WriteLine();
-Console.WriteLine($"=== {assemblyCount} assemblies, {typeCount} types decompiled ({charCount} chars), {refsResolved}/{refsTotal} refs resolved, {failures.Count} distinct failures ({failures.Values.Sum(f => f.Count)} total) ===");
+if (pdbMode || pdbLint)
+	Console.WriteLine($"=== {assemblyCount} assemblies, {pdbChecked} PDBs checked, {pdbSkipped} skipped, {failures.Count} distinct failures ({failures.Values.Sum(f => f.Count)} total) ===");
+else
+	Console.WriteLine($"=== {assemblyCount} assemblies, {typeCount} types decompiled ({charCount} chars), {refsResolved}/{refsTotal} refs resolved, {failures.Count} distinct failures ({failures.Values.Sum(f => f.Count)} total) ===");
 foreach (var entry in failures.Values.OrderByDescending(f => f.Count))
 	Console.WriteLine($"{entry.Count,6}x {entry.Describe()}");
 // A sweep runs this program once per package, so per-run findings are appended to a
@@ -188,6 +300,16 @@ async Task ProcessPackage(string spec)
 		matchTarget = net48;
 		pick = PickLib(dir, matchTarget);
 	}
+	else if (await ShouldPreferNetFxAsset(pick.Value.fw))
+	{
+		var netFxPick = PickLib(dir, net48);
+		if (netFxPick != null)
+		{
+			Console.WriteLine($"  ! ref pack {NetCoreRefPack}: nothing published for {pick.Value.fw.Version}, using {netFxPick.Value.fw.GetShortFolderName()} instead of {pick.Value.fw.GetShortFolderName()}");
+			matchTarget = net48;
+			pick = netFxPick;
+		}
+	}
 	if (pick == null)
 	{
 		Console.WriteLine("  no compatible lib assemblies, skipping");
@@ -203,6 +325,8 @@ async Task ProcessPackage(string spec)
 		// The package and its dependency closure are in the cache now, which is all a
 		// corpus needs; decompiling every type is what the sweep is for.
 		Console.WriteLine($"  cached: {libDir}");
+		lock (stateLock)
+			corpusDirs.Add(libDir);
 		return;
 	}
 	// The installed runtime dir is a last-resort fallback only: Microsoft.NETCore.App
@@ -210,7 +334,14 @@ async Task ProcessPackage(string spec)
 	// not shadow the real assemblies from ref packs or dependency packages.
 	string? fallbackDir = null;
 	if (libFw.Framework == FrameworkConstants.FrameworkIdentifiers.Net)
+	{
 		searchDirs.AddRange(await GetNetFxRefDirs(libFw));
+		// Ranked after the reference packages, and only for classic targets: these are
+		// implementation assemblies, and letting them near a netstandard or .NET assembly
+		// would bind it to a .NET Framework BCL and turn every moved type into a decompiler
+		// failure that is really a reference problem.
+		searchDirs.AddRange(localFrameworkDirs);
+	}
 	else
 		fallbackDir = Path.GetDirectoryName(typeof(object).Assembly.Location);
 
@@ -294,6 +425,57 @@ async Task<List<string>> CollectDependencies(string rootDir, NuGetFramework matc
 	return null;
 }
 
+async Task<bool> ShouldPreferNetFxAsset(NuGetFramework libFw)
+{
+	if (libFw.Framework != FrameworkConstants.FrameworkIdentifiers.NetCoreApp)
+		return false;
+	var versions = await GetVersions(NetCoreRefPack);
+	if (versions == null)
+		return true;
+	return !versions.Any(v => !v.IsPrerelease && v.Major == libFw.Version.Major && v.Minor == libFw.Version.Minor)
+		&& !versions.Any(v => !v.IsPrerelease && v.Major <= libFw.Version.Major);
+}
+
+// The framework directories of a local .NET Framework installation, newest and 64-bit first.
+// On Windows this is %WINDIR%\Microsoft.NET, which is always present. Everywhere else the
+// same tree has to be supplied by hand, so NUGETFUZZ_FRAMEWORKS takes one or more roots
+// separated by the platform path separator. A root is either a framework tree (holding
+// Framework/ and Framework64/) or a single directory of loose assemblies, which is used as is.
+// The GAC is deliberately not searched: it nests every assembly in its own version folder,
+// which would mean thousands of search directories, and for the classic targets the framework
+// directories already carry the assemblies the reference packages omit.
+List<string> FindLocalFrameworkDirs()
+{
+	var roots = new List<string>();
+	if (OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("WINDIR") is { Length: > 0 } windir)
+		roots.Add(Path.Combine(windir, "Microsoft.NET"));
+	if (Environment.GetEnvironmentVariable("NUGETFUZZ_FRAMEWORKS") is { Length: > 0 } configured)
+		roots.AddRange(configured.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries));
+
+	var dirs = new List<string>();
+	foreach (var root in roots.Where(Directory.Exists))
+	{
+		bool expanded = false;
+		foreach (var bitness in new[] { "Framework64", "Framework" })
+		{
+			var bitnessDir = Path.Combine(root, bitness);
+			if (!Directory.Exists(bitnessDir))
+				continue;
+			foreach (var version in Directory.GetDirectories(bitnessDir, "v*")
+				.OrderByDescending(d => Path.GetFileName(d), StringComparer.OrdinalIgnoreCase))
+			{
+				if (Directory.GetFiles(version, "*.dll").Length == 0)
+					continue;
+				dirs.Add(version);
+				expanded = true;
+			}
+		}
+		if (!expanded && Directory.GetFiles(root, "*.dll").Length > 0)
+			dirs.Add(root);
+	}
+	return dirs;
+}
+
 // Classic .NET Framework has no reference assemblies on this machine; fetch the
 // matching Microsoft.NETFramework.ReferenceAssemblies package instead.
 async Task<List<string>> GetNetFxRefDirs(NuGetFramework libFw)
@@ -365,21 +547,26 @@ async Task<T> WithRetry<T>(Func<Task<T>> request)
 async Task<List<NuGetVersion>?> GetVersions(string id)
 {
 	var key = id.ToLowerInvariant();
-	if (noSuchPackage.Contains(key))
-		return null;
-	if (versionCache.TryGetValue(key, out var cached))
-		return cached;
+	lock (stateLock)
+	{
+		if (noSuchPackage.Contains(key))
+			return null;
+		if (versionCache.TryGetValue(key, out var cached))
+			return cached;
+	}
 	try
 	{
 		var index = await WithRetry(() => http.GetFromJsonAsync<VersionIndex>(
 			$"https://api.nuget.org/v3-flatcontainer/{key}/index.json"));
 		var versions = index!.versions.Select(NuGetVersion.Parse).ToList();
-		versionCache[key] = versions;
+		lock (stateLock)
+			versionCache[key] = versions;
 		return versions;
 	}
 	catch (HttpRequestException)
 	{
-		noSuchPackage.Add(key);
+		lock (stateLock)
+			noSuchPackage.Add(key);
 		return null;
 	}
 }
@@ -398,7 +585,7 @@ async Task<bool> TryFetchMissingRef(IAssemblyReference reference, Version? coreV
 	{
 		lock (dirs)
 		{
-			return dirs.Any(d => File.Exists(Path.Combine(d, reference.Name + ".dll")));
+			return AssemblyReferenceCompatibility.Find(dirs, reference) != null;
 		}
 	}
 	if (coreVersion != null
@@ -443,6 +630,52 @@ async Task<bool> TryFetchMissingRef(IAssemblyReference reference, Version? coreV
 		Console.WriteLine($"  ! undeclared dependency {reference.Name}: {ex.Message}");
 	}
 	return Satisfied();
+}
+
+async Task ExpandForwarderReferences(List<string> dirs, Version? coreVersion, NuGetFramework matchTarget)
+{
+	var scanned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+	for (bool expanded = true; expanded;)
+	{
+		expanded = false;
+		string[] files;
+		lock (dirs)
+		{
+			files = dirs.Where(Directory.Exists)
+				.SelectMany(d => Directory.EnumerateFiles(d, "*.dll"))
+				.ToArray();
+		}
+		foreach (var file in files)
+		{
+			if (!scanned.Add(file))
+				continue;
+			PEFile module;
+			try
+			{
+				module = new PEFile(file);
+			}
+			catch (Exception ex) when (ex is BadImageFormatException or MetadataFileNotSupportedException)
+			{
+				continue;
+			}
+			using (module)
+			{
+				foreach (var handle in module.Metadata.ExportedTypes)
+				{
+					var exportedType = module.Metadata.GetExportedType(handle);
+					if (exportedType.Implementation.Kind != HandleKind.AssemblyReference)
+						continue;
+					var reference = new ICSharpCode.Decompiler.Metadata.AssemblyReference(
+						module, (AssemblyReferenceHandle)exportedType.Implementation);
+					if (AssemblyReferenceCompatibility.Find(dirs, reference) != null)
+						continue;
+					var before = dirs.Count;
+					await TryFetchMissingRef(reference, coreVersion, matchTarget, dirs);
+					expanded |= dirs.Count != before;
+				}
+			}
+		}
+	}
 }
 
 // Adds the ref/<tfm> directory of a framework ref pack (WindowsDesktop, AspNetCore)
@@ -500,22 +733,35 @@ async Task<string> GetPackage(string id, NuGetVersion version)
 	if (Directory.Exists(globalDir))
 		return globalDir;
 	var dir = Path.Combine(cacheRoot, idLower, v);
-	if (!Directory.Exists(dir))
+	// Serialized so two packages sharing a dependency do not extract into the same .tmp directory.
+	await downloadGate.WaitAsync();
+	try
 	{
-		Console.WriteLine($"  downloading {id} {v}");
-		var bytes = await WithRetry(() => http.GetByteArrayAsync(
-			$"https://api.nuget.org/v3-flatcontainer/{idLower}/{v}/{idLower}.{v}.nupkg"));
-		var tmp = dir + ".tmp";
-		if (Directory.Exists(tmp))
-			Directory.Delete(tmp, true);
-		ZipFile.ExtractToDirectory(new MemoryStream(bytes), tmp);
-		Directory.Move(tmp, dir);
+		if (!Directory.Exists(dir))
+		{
+			Console.WriteLine($"  downloading {id} {v}");
+			var bytes = await WithRetry(() => http.GetByteArrayAsync(
+				$"https://api.nuget.org/v3-flatcontainer/{idLower}/{v}/{idLower}.{v}.nupkg"));
+			var tmp = dir + ".tmp";
+			if (Directory.Exists(tmp))
+				Directory.Delete(tmp, true);
+			ZipFile.ExtractToDirectory(new MemoryStream(bytes), tmp);
+			Directory.Move(tmp, dir);
+		}
+	}
+	finally
+	{
+		downloadGate.Release();
 	}
 	return dir;
 }
 
 async Task DecompileAssembly(string pkg, string dllPath, List<string> searchDirs, NuGetFramework matchTarget, string? fallbackDir)
 {
+	// An assembly that bails out before reporting its resolutions leaves findings behind that
+	// never received a context. Dropping them here keeps the next assembly from stamping its
+	// own references onto them, which would name the wrong reference set for the finding.
+	pendingContextHolder.Value = new List<string>();
 	var name = Path.GetFileName(dllPath);
 	PEFile module;
 	try
@@ -529,6 +775,9 @@ async Task DecompileAssembly(string pkg, string dllPath, List<string> searchDirs
 	}
 	using (module)
 	{
+		// The file name alone is ambiguous across a sweep: the same simple name ships in many
+		// packages and many TFM folders. Identify findings by full assembly name plus path.
+		name = $"{module.FullName} ({dllPath})";
 		// ".NETCoreApp,Version=v5.0" -> 5.0; null for .NET Framework / netstandard modules.
 		Version? coreVersion = null;
 		var tfmId = module.DetectTargetFrameworkId();
@@ -557,6 +806,9 @@ async Task DecompileAssembly(string pkg, string dllPath, List<string> searchDirs
 		// Last-resort only, for the same reason the ref packs are ordered as they are.
 		if (fallbackDir != null)
 			orderedDirs.Add(fallbackDir);
+		if (matchTarget.Framework == FrameworkConstants.FrameworkIdentifiers.NetStandard)
+			await AddRefPack(NetCoreRefPack, installedTfm.Version, orderedDirs);
+		await ExpandForwarderReferences(orderedDirs, coreVersion, matchTarget);
 		foreach (var d in orderedDirs)
 			resolver.AddSearchDirectory(d);
 		var fetchGate = new object();
@@ -578,24 +830,54 @@ async Task DecompileAssembly(string pkg, string dllPath, List<string> searchDirs
 			return;
 		}
 		Console.WriteLine($"  {name}");
-		assemblyCount++;
+		lock (stateLock)
+			assemblyCount++;
+		if (pdbMode)
+		{
+			CheckGeneratedPdb(pkg, name, module, decompiler, dllPath, orderedDirs);
+			ReportResolutions(logResolver, dllPath, orderedDirs);
+			return;
+		}
 		foreach (var type in decompiler.TypeSystem.MainModule.TopLevelTypeDefinitions.ToList())
 		{
 			using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 			decompiler.CancellationToken = cts.Token;
 			try
 			{
-				var code = decompiler.DecompileTypeAsString(type.FullTypeName);
-				typeCount++;
-				charCount += code.Length;
+				var tree = decompiler.DecompileType(type.FullTypeName);
+				foreach (var error in decompiler.Errors)
+					Report(pkg, name, type.FullTypeName.ToString(), error);
+				var code = SyntaxTreeToString(tree);
+				lock (stateLock)
+				{
+					typeCount++;
+					charCount += code.Length;
+				}
 				// Compiler-generated types (<Module>, <PrivateImplementationDetails>,
 				// VB$AnonymousType_*, ...) are still decompiled to shake out edge cases,
 				// but empty output is normal for them ('<' and '$' match the decompiler's
 				// own generated-name detection in SRMExtensions.IsGeneratedName).
-				if (string.IsNullOrWhiteSpace(code) && !type.Name.StartsWith('<') && !type.Name.Contains('$'))
+				bool generatedType = type.Name.StartsWith('<') || type.Name.Contains('$');
+				if (string.IsNullOrWhiteSpace(code) && !generatedType)
 					Report(pkg, name, type.FullTypeName.ToString(), new InvalidDataException("empty decompilation output"));
 				else if (dumpDir != null)
 					File.WriteAllText(Path.Combine(dumpDir, SanitizeFileName($"{pkg}.{type.FullTypeName}.cs")), code);
+				// An identifier may only contain letters, digits and '_' (the rule
+				// EscapeInvalidIdentifiers.IsValid applies for project output). Generated-name
+				// shapes are compiler-generated entities the decompiler failed to fold away;
+				// non-printable or otherwise invalid names are obfuscator output. Inside a generated
+				// type everything is mangled by definition, so only user-written types are checked.
+				if (!generatedType)
+				{
+					foreach (var leak in tree.DescendantsAndSelf.OfType<Identifier>()
+						.Select(i => i.Name)
+						.Where(n => !n.All(ch => char.IsLetterOrDigit(ch) || ch == '_'))
+						.Distinct())
+					{
+						Report(pkg, name, type.FullTypeName.ToString(),
+							IsCompilerGeneratedNameLeak(leak) ? new LeakedName(leak) : new ObfuscatedName(leak));
+					}
+				}
 				// ILFunction warnings (unknown result types, stack type mismatches, invalid IL)
 				// surface in the output as "//IL_xxxx: <message>" comments.
 				foreach (var warning in Regex.Matches(code, @"//IL_[0-9a-fA-F]+: (.*)")
@@ -613,23 +895,624 @@ async Task DecompileAssembly(string pkg, string dllPath, List<string> searchDirs
 				Report(pkg, name, type.FullTypeName.ToString(), ex);
 			}
 		}
-		var resolutions = logResolver.Resolutions;
-		var unresolved = resolutions.Where(kv => kv.Value == null).Select(kv => kv.Key).OrderBy(k => k).ToList();
+		ReportResolutions(logResolver, dllPath, orderedDirs);
+	}
+}
+
+string SyntaxTreeToString(SyntaxTree syntaxTree)
+{
+	var w = new StringWriter();
+	syntaxTree.AcceptVisitor(new CSharpOutputVisitor(w, formatting));
+	return w.ToString();
+}
+
+void ReportResolutions(LoggingResolver logResolver, string dllPath, List<string> orderedDirs)
+{
+	var resolutions = logResolver.Resolutions;
+	var unresolved = resolutions.Where(kv => kv.Value == null).Select(kv => kv.Key).OrderBy(k => k).ToList();
+	// What it takes to reproduce a finding by hand: the assembly it came from and the
+	// references it was decompiled against, which are what the report is read for once
+	// a warning turns out to be a reference problem rather than a decompiler defect.
+	var context = new StringBuilder($"assembly: {dllPath}");
+	foreach (var dir in orderedDirs)
+		context.Append($"{Environment.NewLine}  -r {dir}");
+	foreach (var (refName, refPath) in resolutions.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+		context.Append($"{Environment.NewLine}  {refName} -> {refPath ?? "NOT FOUND"}");
+	lock (stateLock)
+	{
+		foreach (var key in PendingContext())
+			failures[key] = failures[key] with { Context = context.ToString() };
 		refsTotal += resolutions.Count;
 		refsResolved += resolutions.Count - unresolved.Count;
-		Console.WriteLine($"    refs: {resolutions.Count - unresolved.Count}/{resolutions.Count} resolved");
-		if (verbose)
+	}
+	PendingContext().Clear();
+	Console.WriteLine($"    refs: {resolutions.Count - unresolved.Count}/{resolutions.Count} resolved");
+	if (verbose)
+	{
+		foreach (var kv in resolutions.OrderBy(kv => kv.Key))
+			Console.WriteLine($"      {kv.Key} -> {kv.Value ?? "NOT FOUND"}");
+	}
+	else
+	{
+		foreach (var u in unresolved)
+			Console.WriteLine($"    ! unresolved: {u}");
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// PDB verification. Two independent checks over the same PDB: the Cecil round-trip answers "can
+// the consumer ILLink uses read this at all", which is how #2823 surfaced; the lint answers "is
+// what it reads true of the assembly", which a crash-free but wrong PDB still fails.
+// ---------------------------------------------------------------------------------------------
+
+void CheckGeneratedPdb(string pkg, string asm, PEFile module, CSharpDecompiler decompiler,
+	string dllPath, List<string> searchDirs)
+{
+	// The writer takes the PDB id from the PE's CodeView debug directory entry, and a consumer
+	// rejects a PDB whose id does not match that entry, so without one there is nothing to check
+	// - the same reason ilspycmd refuses these assemblies.
+	if (!PortablePdbWriter.HasCodeViewDebugDirectoryEntry(module))
+	{
+		Console.WriteLine("    skip: no CodeView debug directory entry");
+		pdbSkipped++;
+		return;
+	}
+	var pdbStream = new MemoryStream();
+	var asserts = new List<string>();
+	using (var cts = new CancellationTokenSource(TimeSpan.FromMinutes(10)))
+	{
+		decompiler.CancellationToken = cts.Token;
+		Trace.Listeners.Clear();
+		Trace.Listeners.Add(new CollectAsserts(asserts));
+		try
 		{
-			foreach (var kv in resolutions.OrderBy(kv => kv.Key))
-				Console.WriteLine($"      {kv.Key} -> {kv.Value ?? "NOT FOUND"}");
+			new PortablePdbWriter { NoLogo = true }
+				.WritePdb(module, decompiler, new DecompilerSettings(), pdbStream);
 		}
-		else
+		catch (OperationCanceledException)
 		{
-			foreach (var u in unresolved)
-				Console.WriteLine($"    ! unresolved: {u}");
+			Report(pkg, asm, "<pdb>", new TimeoutException("PDB generation timed out (10min)"));
+			return;
+		}
+		catch (Exception ex)
+		{
+			Report(pkg, asm, "<pdb>", ex);
+			return;
+		}
+		finally
+		{
+			Trace.Listeners.Clear();
+			Trace.Listeners.Add(new ThrowOnAssert());
+		}
+	}
+	// Metadata tokens in an assertion message vary per method; without normalising them one
+	// defect would fill the ledger with a finding per method it fired on.
+	foreach (var message in asserts.Select(m => Regex.Replace(m, @"\b[0-9A-Fa-f]{8}\b", "<token>")).Distinct())
+		Report(pkg, asm, "<pdb>", new AssertionFailedException(message));
+
+	pdbChecked++;
+	var bodies = CollectBodyFacts(dllPath, searchDirs);
+	CecilRoundTrip(pkg, asm, dllPath, pdbStream, searchDirs);
+	pdbStream.Position = 0;
+	using var provider = MetadataReaderProvider.FromPortablePdbStream(pdbStream);
+	LintPdb(pkg, asm, module.Metadata, provider.GetMetadataReader(), bodies, EntryPoint(module.Reader));
+}
+
+// Runs the same two checks against the PDB an assembly already ships with. This is how the lint
+// is calibrated: a PDB the C# compiler wrote must produce no findings at all, so anything
+// reported here is a defect in the lint rather than in ILSpy.
+void LintExistingPdb(string dllPath)
+{
+	using var peStream = File.OpenRead(dllPath);
+	PEReader peReader;
+	try
+	{
+		peReader = new PEReader(peStream);
+		if (!peReader.HasMetadata)
+			return;
+	}
+	catch (BadImageFormatException)
+	{
+		return;
+	}
+	using (peReader)
+	{
+		var asm = $"{peReader.GetMetadataReader().GetFullAssemblyName()} ({dllPath})";
+		// A PDB next to the assembly if there is one, otherwise the one embedded in the PE.
+		MemoryStream? pdbStream = null;
+		MetadataReaderProvider? provider = null;
+		var pdbPath = Path.ChangeExtension(dllPath, ".pdb");
+		try
+		{
+			if (File.Exists(pdbPath))
+			{
+				var bytes = File.ReadAllBytes(pdbPath);
+				// "BSJB": a Windows PDB is a different format the portable reader cannot open.
+				if (bytes.Length < 4 || BitConverter.ToUInt32(bytes, 0) != 0x424A5342)
+				{
+					pdbSkipped++;
+					return;
+				}
+				pdbStream = new MemoryStream(bytes);
+				provider = MetadataReaderProvider.FromPortablePdbStream(pdbStream, MetadataStreamOptions.LeaveOpen);
+			}
+			else
+			{
+				var embedded = peReader.ReadDebugDirectory()
+					.FirstOrDefault(e => e.Type == DebugDirectoryEntryType.EmbeddedPortablePdb);
+				if (embedded.Type != DebugDirectoryEntryType.EmbeddedPortablePdb)
+					return;
+				provider = peReader.ReadEmbeddedPortablePdbDebugDirectoryData(embedded);
+			}
+		}
+		catch (Exception ex) when (ex is IOException or BadImageFormatException)
+		{
+			pdbSkipped++;
+			return;
+		}
+		using (provider)
+		using (pdbStream)
+		{
+			Console.WriteLine($"  {asm}");
+			assemblyCount++;
+			pdbChecked++;
+			var bodies = CollectBodyFacts(dllPath, null);
+			CecilRoundTrip("-", asm, dllPath, pdbStream, null);
+			LintPdb("-", asm, peReader.GetMetadataReader(), provider.GetMetadataReader(), bodies,
+				EntryPoint(peReader));
 		}
 	}
 }
+
+Cecil.ReaderParameters CecilParameters(List<string>? searchDirs, Stream? symbols, bool readSymbols)
+{
+	var resolver = new Cecil.DefaultAssemblyResolver();
+	foreach (var dir in searchDirs ?? [])
+		resolver.AddSearchDirectory(dir);
+	var parameters = new Cecil.ReaderParameters { AssemblyResolver = resolver };
+	if (!readSymbols)
+		return parameters;
+	parameters.ReadSymbols = true;
+	if (symbols != null)
+	{
+		symbols.Position = 0;
+		parameters.SymbolReaderProvider = new CecilCil.PortablePdbReaderProvider();
+		parameters.SymbolStream = symbols;
+	}
+	else
+	{
+		parameters.SymbolReaderProvider = new CecilCil.EmbeddedPortablePdbReaderProvider();
+	}
+	return parameters;
+}
+
+// Parses every method body without symbols, so the lint has the assembly's own truth about
+// instruction boundaries, exception handlers and local counts to check the PDB against - and
+// still has it for the very methods whose debug information breaks the round-trip below.
+Dictionary<int, BodyFacts> CollectBodyFacts(string dllPath, List<string>? searchDirs)
+{
+	var facts = new Dictionary<int, BodyFacts>();
+	try
+	{
+		using var assembly = Cecil.AssemblyDefinition.ReadAssembly(dllPath, CecilParameters(searchDirs, null, readSymbols: false));
+		foreach (var type in assembly.MainModule.GetTypes())
+		{
+			foreach (var method in type.Methods)
+			{
+				if (!method.HasBody)
+					continue;
+				try
+				{
+					var body = method.Body;
+					facts[(int)method.MetadataToken.RID] = new BodyFacts(
+						body.CodeSize,
+						body.Instructions.Select(i => i.Offset).ToHashSet(),
+						body.ExceptionHandlers
+							.Where(h => h.HandlerType == CecilCil.ExceptionHandlerType.Catch)
+							.Select(h => h.HandlerStart.Offset).ToHashSet(),
+						body.Variables.Count);
+				}
+				catch (Exception)
+				{
+					// A body that will not parse without symbols says nothing about the PDB; the
+					// lint simply has no facts to check that one method against.
+				}
+			}
+		}
+	}
+	catch (Exception ex)
+	{
+		Console.WriteLine($"    ! body scan failed: {ex.GetType().Name}: {FirstLine(ex.Message)}");
+	}
+	return facts;
+}
+
+// Reads every method body through the PDB, which is what makes Cecil decode the custom debug
+// information attached to it. This is the path that fails in #2823 and inside ILLink.
+void CecilRoundTrip(string pkg, string asm, string dllPath, Stream? pdbStream, List<string>? searchDirs)
+{
+	Cecil.AssemblyDefinition assembly;
+	try
+	{
+		assembly = Cecil.AssemblyDefinition.ReadAssembly(dllPath, CecilParameters(searchDirs, pdbStream, readSymbols: true));
+	}
+	catch (CecilCil.SymbolsNotMatchingException)
+	{
+		Report(pkg, asm, "<pdb>", new PdbFinding(
+			"[MATCH] the PDB does not match the assembly's CodeView debug directory entry"));
+		return;
+	}
+	catch (Exception ex)
+	{
+		Report(pkg, asm, "<pdb>", new PdbFinding(
+			$"[CECIL] {ex.GetType().Name} opening the assembly with the PDB: {FirstLine(ex.Message)}"));
+		return;
+	}
+	using (assembly)
+	{
+		foreach (var type in assembly.MainModule.GetTypes())
+		{
+			foreach (var method in type.Methods)
+			{
+				if (!method.HasBody)
+					continue;
+				try
+				{
+					_ = method.Body;
+					_ = method.DebugInformation.SequencePoints;
+				}
+				catch (Cecil.AssemblyResolutionException)
+				{
+					// A reference the corpus does not contain, not a defect in the PDB.
+				}
+				catch (Exception ex)
+				{
+					// The Cecil frame separates distinct decode failures; the method name goes
+					// into the location, so the message stays the same for all of them.
+					var frame = (ex.StackTrace ?? "").Split('\n').Select(l => l.Trim())
+						.FirstOrDefault(l => l.Contains("Mono.Cecil")) ?? "";
+					Report(pkg, asm, method.FullName, new PdbFinding(
+						$"[CECIL] {ex.GetType().Name} reading a method body through the PDB @ {frame}"));
+				}
+			}
+		}
+	}
+}
+
+// Structural lint: everything the PDB claims has to be true of the assembly it describes. The
+// category is a prefix on the message, so one finding kind covers all of them in the report.
+void LintPdb(string pkg, string asm, MetadataReader pe, MetadataReader pdb, Dictionary<int, BodyFacts> bodies,
+	MethodDefinitionHandle entryPoint)
+{
+	var sourceLines = new Dictionary<int, string[]?>();
+
+	string MethodName(int rid)
+	{
+		if (rid <= 0 || rid > pe.MethodDefinitions.Count)
+			return "<pdb>";
+		var method = pe.GetMethodDefinition(MetadataTokens.MethodDefinitionHandle(rid));
+		var type = pe.GetTypeDefinition(method.GetDeclaringType());
+		var ns = pe.GetString(type.Namespace);
+		return $"{(ns.Length > 0 ? ns + "." : "")}{pe.GetString(type.Name)}.{pe.GetString(method.Name)}";
+	}
+
+	// One report per method per defect: a method with hundreds of sequence points would
+	// otherwise contribute hundreds of hits for a single mistake.
+	void Once(HashSet<string> seen, int rid, string message)
+	{
+		if (seen.Add(message))
+			Report(pkg, asm, MethodName(rid), new PdbFinding(message));
+	}
+
+	// The embedded source, as lines, for checking that sequence points point at real text.
+	string[]? EmbeddedLines(DocumentHandle handle)
+	{
+		int key = MetadataTokens.GetRowNumber(handle);
+		if (sourceLines.TryGetValue(key, out var cached))
+			return cached;
+		string[]? lines = null;
+		foreach (var infoHandle in pdb.GetCustomDebugInformation(handle))
+		{
+			var info = pdb.GetCustomDebugInformation(infoHandle);
+			if (pdb.GetGuid(info.Kind) != KnownGuids.EmbeddedSource)
+				continue;
+			var blob = pdb.GetBlobBytes(info.Value);
+			if (blob.Length < 4)
+				break;
+			// int32 uncompressed size, then the bytes - deflated when the size is non-zero.
+			int uncompressedSize = BitConverter.ToInt32(blob, 0);
+			using var raw = new MemoryStream(blob, 4, blob.Length - 4);
+			using Stream content = uncompressedSize > 0
+				? new DeflateStream(raw, CompressionMode.Decompress)
+				: raw;
+			using var reader = new StreamReader(content, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+			lines = reader.ReadToEnd().Replace("\r\n", "\n").Split('\n');
+			break;
+		}
+		sourceLines[key] = lines;
+		return lines;
+	}
+
+	// The MethodDebugInformation table is parallel to MethodDef: a consumer indexes it by
+	// method row, so a short table silently shifts every method's debug info.
+	if (pdb.MethodDebugInformation.Count != pe.MethodDefinitions.Count)
+	{
+		Report(pkg, asm, "<pdb>", new PdbFinding(
+			"[DOCS] the MethodDebugInformation row count differs from the MethodDef row count"));
+	}
+
+	bool anySequencePoints = false;
+	foreach (var infoHandle in pdb.MethodDebugInformation)
+	{
+		var info = pdb.GetMethodDebugInformation(infoHandle);
+		if (info.SequencePointsBlob.IsNil)
+			continue;
+		int rid = MetadataTokens.GetRowNumber(infoHandle);
+		bodies.TryGetValue(rid, out var facts);
+		var seen = new HashSet<string>();
+		int previousOffset = -1;
+		foreach (var point in info.GetSequencePoints())
+		{
+			anySequencePoints = true;
+			// Offsets are delta-encoded, so a non-increasing one is not just out of order:
+			// it aliases into the record that means "the document changed here".
+			if (point.Offset <= previousOffset)
+				Once(seen, rid, "[SEQPOINT] sequence point offsets are not strictly increasing");
+			previousOffset = point.Offset;
+			if (facts != null && !facts.InstructionOffsets.Contains(point.Offset))
+				Once(seen, rid, "[OFFSET] a sequence point offset is not an instruction boundary");
+			if (point.IsHidden)
+				continue;
+			if (point.StartLine > point.EndLine
+				|| (point.StartLine == point.EndLine && point.StartColumn >= point.EndColumn))
+			{
+				Once(seen, rid, "[SEQPOINT] a sequence point span is empty or inverted");
+			}
+			var lines = EmbeddedLines(point.Document);
+			if (lines == null)
+				continue;
+			if (point.EndLine > lines.Length)
+				Once(seen, rid, "[SOURCE] a sequence point points past the end of the embedded source");
+			else if (SpanIsBlank(lines, point.StartLine, point.StartColumn, point.EndLine, point.EndColumn))
+				Once(seen, rid, "[SOURCE] a sequence point span covers only whitespace");
+		}
+	}
+	if (anySequencePoints && pdb.Documents.Count == 0)
+		Report(pkg, asm, "<pdb>", new PdbFinding("[DOCS] the PDB has sequence points but no documents"));
+
+	// The table is sorted by method, then start offset, then descending length, so the
+	// enclosing scope of a row is always the innermost one still open.
+	int currentMethod = 0;
+	var open = new List<(int Start, int End)>();
+	var scopeSeen = new HashSet<string>();
+	foreach (var scopeHandle in pdb.LocalScopes)
+	{
+		var scope = pdb.GetLocalScope(scopeHandle);
+		int rid = MetadataTokens.GetRowNumber(scope.Method);
+		if (rid != currentMethod)
+		{
+			currentMethod = rid;
+			open.Clear();
+			scopeSeen.Clear();
+		}
+		bodies.TryGetValue(rid, out var facts);
+		int start = scope.StartOffset, end = scope.EndOffset;
+		if (facts != null)
+		{
+			if (!facts.InstructionOffsets.Contains(start))
+				Once(scopeSeen, rid, "[OFFSET] a local scope starts at an offset that is not an instruction boundary");
+			if (end > facts.CodeSize)
+				Once(scopeSeen, rid, "[OFFSET] a local scope extends past the end of the method body");
+			else if (end != facts.CodeSize && !facts.InstructionOffsets.Contains(end))
+				Once(scopeSeen, rid, "[OFFSET] a local scope ends at an offset that is not an instruction boundary");
+		}
+		while (open.Count > 0 && open[^1].End <= start)
+			open.RemoveAt(open.Count - 1);
+		if (open.Count > 0 && end > open[^1].End)
+			Once(scopeSeen, rid, "[LOCALS] a local scope is not nested inside its enclosing scope");
+		open.Add((start, end));
+		var slots = new HashSet<int>();
+		foreach (var variableHandle in scope.GetLocalVariables())
+		{
+			var variable = pdb.GetLocalVariable(variableHandle);
+			if (facts != null && variable.Index >= facts.LocalCount)
+				Once(scopeSeen, rid, "[LOCALS] a local variable slot is past the end of the method's local signature");
+			if (!slots.Add(variable.Index))
+				Once(scopeSeen, rid, "[LOCALS] two local variables in one scope share a slot");
+		}
+	}
+
+	// The expression evaluator resolves unqualified names by walking a scope up to the single
+	// module-level root. A second root means some scopes hang off nothing, and everything
+	// under them resolves against an empty chain no matter what the other root holds.
+	// (An import scope carrying no imports at all is legal - a file need not have usings.)
+	int rootImportScopes = 0;
+	foreach (var importScopeHandle in pdb.ImportScopes)
+	{
+		if (pdb.GetImportScope(importScopeHandle).Parent.IsNil)
+			rootImportScopes++;
+	}
+	if (rootImportScopes > 1)
+	{
+		Report(pkg, asm, "<pdb>", new PdbFinding(
+			"[IMPORTS] the import scope table has more than one root, so some scopes chain to nothing"));
+	}
+
+	foreach (var infoHandle in pdb.CustomDebugInformation)
+	{
+		var info = pdb.GetCustomDebugInformation(infoHandle);
+		if (info.Parent.Kind != HandleKind.MethodDefinition)
+			continue;
+		int rid = MetadataTokens.GetRowNumber((MethodDefinitionHandle)info.Parent);
+		bodies.TryGetValue(rid, out var facts);
+		var kind = pdb.GetGuid(info.Kind);
+		var seen = new HashSet<string>();
+		if (kind == KnownGuids.MethodSteppingInformation)
+			CheckAsyncStepping(pdb.GetBlobReader(info.Value), rid, facts, seen);
+		else if (kind == KnownGuids.StateMachineHoistedLocalScopes)
+			CheckHoistedScopes(pdb.GetBlobReader(info.Value), rid, facts, seen);
+	}
+
+	void CheckAsyncStepping(BlobReader reader, int rid, BodyFacts? facts, HashSet<string> seen)
+	{
+		try
+		{
+			if (reader.RemainingBytes < 4)
+			{
+				Once(seen, rid, "[ASYNC] the async stepping blob is truncated");
+				return;
+			}
+			long catchHandler = reader.ReadUInt32();
+			if (catchHandler != 0)
+			{
+				// The field is the handler's offset plus one, and only for async void
+				// methods; 0 otherwise. A consumer decodes it as (value - 1), so a raw
+				// offset resolves to an address in the middle of an instruction.
+				var kickoff = pdb.GetMethodDebugInformation(MetadataTokens.MethodDebugInformationHandle(rid))
+					.GetStateMachineKickoffMethod();
+				// The compiler records a handler for an async void method and for an async entry
+				// point - both are shapes nothing is expected to await, so the debugger should treat
+				// the exception as user-unhandled - and an async entry point returns Task.
+				if (!kickoff.IsNil && !IsUserEntryPoint(pe, kickoff, entryPoint) && !ReturnsVoid(pe, kickoff))
+					Once(seen, rid, "[ASYNC] async stepping information records a catch handler for a method whose kickoff method does not return void");
+				int decoded = (int)catchHandler - 1;
+				if (facts != null && !facts.InstructionOffsets.Contains(decoded))
+					Once(seen, rid, "[OFFSET] the async stepping catch handler does not decode to an instruction boundary");
+				else if (facts != null && !facts.CatchHandlerStarts.Contains(decoded))
+					Once(seen, rid, "[ASYNC] the async stepping catch handler does not decode to the start of a catch handler");
+			}
+			while (reader.RemainingBytes > 0)
+			{
+				int yield = (int)reader.ReadUInt32();
+				int resume = (int)reader.ReadUInt32();
+				int resumeMethod = reader.ReadCompressedInteger();
+				if (facts != null && !facts.InstructionOffsets.Contains(yield))
+					Once(seen, rid, "[OFFSET] an async yield offset is not an instruction boundary");
+				if (facts != null && !facts.InstructionOffsets.Contains(resume))
+					Once(seen, rid, "[OFFSET] an async resume offset is not an instruction boundary");
+				if (resumeMethod != rid)
+					Once(seen, rid, "[ASYNC] an async resume method is not the method carrying the stepping information");
+			}
+		}
+		catch (BadImageFormatException)
+		{
+			Once(seen, rid, "[ASYNC] the async stepping blob is malformed");
+		}
+	}
+
+	void CheckHoistedScopes(BlobReader reader, int rid, BodyFacts? facts, HashSet<string> seen)
+	{
+		int rows = 0;
+		while (reader.RemainingBytes >= 8)
+		{
+			int start = (int)reader.ReadUInt32();
+			int length = (int)reader.ReadUInt32();
+			rows++;
+			if (facts != null && start + length > facts.CodeSize)
+				Once(seen, rid, "[OFFSET] a state machine hoisted local scope extends past the end of the method body");
+		}
+		// The debugger indexes this table by the slot number it parses out of the state
+		// machine's own field names, so rows missing at the end drop those locals entirely.
+		if (rows < HoistedSlotCount(pe, rid))
+			Once(seen, rid, "[STATEMACHINE] the state machine hoisted local scope table has fewer rows than the state machine has hoisted slots");
+	}
+}
+
+// True when every character the span covers is whitespace - a sequence point the debugger would
+// highlight as an empty stretch of the source it is embedded next to.
+static bool SpanIsBlank(string[] lines, int startLine, int startColumn, int endLine, int endColumn)
+{
+	for (int line = startLine; line <= endLine && line <= lines.Length; line++)
+	{
+		var text = lines[line - 1];
+		int from = line == startLine ? Math.Min(startColumn - 1, text.Length) : 0;
+		int to = line == endLine ? Math.Min(endColumn - 1, text.Length) : text.Length;
+		if (to > from && text[from..to].Trim().Length > 0)
+			return false;
+	}
+	return true;
+}
+
+// A debugger finds a hoisted local by parsing the slot number N out of the state machine's own
+// field names and reading row N-1 of the hoisted scope table, so the table has to reach the
+// highest slot the debugger will ask for. Only user-visible hoisted fields are ever asked for:
+// <name>5__N holds a hoisted local and <>8__N a hoisted display class, while <>s__N compiler
+// temporaries and <>u__N awaiters share the same slot counter but are never looked up - which is
+// why the compiler's own table stops at the last user-visible slot rather than at the last field.
+static int HoistedSlotCount(MetadataReader pe, int methodRid)
+{
+	var method = pe.GetMethodDefinition(MetadataTokens.MethodDefinitionHandle(methodRid));
+	int max = 0;
+	foreach (var fieldHandle in pe.GetTypeDefinition(method.GetDeclaringType()).GetFields())
+	{
+		var match = Regex.Match(pe.GetString(pe.GetFieldDefinition(fieldHandle).Name), @"^<.*>[58]__([0-9]+)$");
+		if (match.Success)
+			max = Math.Max(max, int.Parse(match.Groups[1].Value));
+	}
+	return max;
+}
+
+// The assembly's entry point, or nil when there is none or it lives in another module of a
+// multi-module assembly (where the token is a File token rather than a method definition).
+static MethodDefinitionHandle EntryPoint(PEReader pe)
+{
+	int token = pe.PEHeaders.CorHeader?.EntryPointTokenOrRelativeVirtualAddress ?? 0;
+	return (token >> 24) == 0x06 && (token & 0xFFFFFF) != 0
+		? MetadataTokens.MethodDefinitionHandle(token & 0xFFFFFF)
+		: default;
+}
+
+// Whether a state machine's kickoff is the entry point as the user wrote it. An async entry
+// point compiles to the user's method plus a '<Main>' wrapper that awaits it, and it is the
+// wrapper the entry point token names, so the kickoff is recognised through it: same declaring
+// type, and the only two names the compiler gives a user entry point.
+static bool IsUserEntryPoint(MetadataReader pe, MethodDefinitionHandle kickoff, MethodDefinitionHandle entryPoint)
+{
+	if (entryPoint.IsNil)
+		return false;
+	if (kickoff == entryPoint)
+		return true;
+	var wrapper = pe.GetMethodDefinition(entryPoint);
+	if (pe.GetString(wrapper.Name) != "<Main>")
+		return false;
+	var definition = pe.GetMethodDefinition(kickoff);
+	var name = pe.GetString(definition.Name);
+	return (name == "Main" || name == "<Main>$")
+		&& definition.GetDeclaringType() == wrapper.GetDeclaringType();
+}
+
+// Reads just the return type out of a method signature: enough to tell an async void kickoff
+// method from an async Task one, without a type system or a resolved reference closure.
+static bool ReturnsVoid(MetadataReader pe, MethodDefinitionHandle handle)
+{
+	var reader = pe.GetBlobReader(pe.GetMethodDefinition(handle).Signature);
+	var header = reader.ReadSignatureHeader();
+	if (header.IsGeneric)
+		reader.ReadCompressedInteger();
+	reader.ReadCompressedInteger();
+	while (reader.RemainingBytes > 0)
+	{
+		byte element = reader.ReadByte();
+		// CMOD_REQD / CMOD_OPT may precede the return type.
+		if (element is 0x1f or 0x20)
+		{
+			reader.ReadCompressedInteger();
+			continue;
+		}
+		return element == 0x01;
+	}
+	return false;
+}
+
+// The paths of a corpus argument: a dll, or a directory scanned recursively for dlls.
+static IEnumerable<string> ExpandDlls(IEnumerable<string> entries)
+	=> entries
+		.SelectMany(e => Directory.Exists(e)
+			? Directory.EnumerateFiles(e, "*.dll", SearchOption.AllDirectories)
+			: [e])
+		.Where(f => !f.EndsWith(".resources.dll", StringComparison.OrdinalIgnoreCase))
+		.Distinct()
+		.OrderBy(f => f, StringComparer.Ordinal);
 
 void Report(string pkg, string asm, string type, Exception ex)
 {
@@ -642,18 +1525,33 @@ void Report(string pkg, string asm, string type, Exception ex)
 		.FirstOrDefault(l => l.Contains("ICSharpCode.Decompiler")) ?? "";
 	var kind = inner is AssertionFailedException ? "ASSERT"
 		: inner is TimeoutException ? "TIMEOUT"
-		: inner is DecompilerWarning ? "WARNING" : "EXCEPTION";
+		: inner is DecompilerWarning ? "WARNING"
+		: inner is LeakedName ? "LEAK"
+		: inner is ObfuscatedName ? "OBFUSCATED"
+		: inner is PdbFinding ? "PDB" : "EXCEPTION";
 	var key = $"{kind}|{inner.GetType().Name}|{inner.Message}|{topFrame}";
 	var location = $"{pkg} / {asm} / {type}";
-	if (failures.TryGetValue(key, out var existing))
+	bool duplicate;
+	lock (stateLock)
 	{
-		failures[key] = existing with { Count = existing.Count + 1 };
+		duplicate = failures.TryGetValue(key, out var existing);
+		if (duplicate)
+		{
+			failures[key] = existing! with { Count = existing.Count + 1 };
+		}
+		else
+		{
+			failures[key] = new Finding(kind, inner.GetType().Name, FirstLine(inner.Message),
+				FirstLine(topFrame), location, ex.ToString(), 1);
+			PendingContext().Add(key);
+		}
+	}
+	if (duplicate)
+	{
 		Console.WriteLine($"  [{kind}] (dup) {type}: {FirstLine(inner.Message)}");
 	}
 	else
 	{
-		failures[key] = new Finding(kind, inner.GetType().Name, FirstLine(inner.Message),
-			FirstLine(topFrame), location, ex.ToString(), 1);
 		Console.WriteLine($"  [{kind}] {location}");
 		foreach (var line in ex.ToString().Split('\n').Take(30))
 			Console.WriteLine("      " + line.TrimEnd());
@@ -674,7 +1572,7 @@ static void AppendToLedger(string path, IEnumerable<Finding> findings, int assem
 		// often than a decompiler defect ("might be due to ... missing references" is what
 		// the warning itself says), and the report separates the two on this basis.
 		lines.Add(JsonSerializer.Serialize(new LedgerEntry("finding", f.Kind, f.ExceptionType, f.Message,
-			f.Frame, f.FirstLocation, f.Detail, f.Count, 0, 0, refsResolved, refsTotal)));
+			f.Frame, f.FirstLocation, f.Detail, f.Count, 0, 0, refsResolved, refsTotal, f.Context)));
 	}
 	lines.Add(JsonSerializer.Serialize(new LedgerEntry("totals", "", "", "", "", "", "", 0,
 		assemblies, types, refsResolved, refsTotal)));
@@ -735,10 +1633,25 @@ static void RenderLedger(string ledgerPath, string outPath)
 		merged[key] = merged.TryGetValue(key, out var existing)
 			? existing with { Count = existing.Count + entry.Count }
 			: new Finding(entry.Kind, entry.ExceptionType, entry.Message, entry.Frame,
-				entry.FirstLocation, entry.Detail, entry.Count);
+				entry.FirstLocation, entry.Detail, entry.Count, entry.Context);
 		// Ledger lines written before this attribution existed carry 0/0; treat those as
 		// unknown rather than clean, so they are never presented as confirmed defects.
 		(entry.RefsTotal > 0 && entry.RefsResolved == entry.RefsTotal ? clean : degraded).Add(key);
+	}
+	foreach (var (key, value) in merged.ToArray())
+	{
+		if (value.Kind == "LEAK" && TryReclassifyObfuscatedLeak(value) is { } reclassified)
+		{
+			merged.Remove(key);
+			var newKey = $"{reclassified.Kind}|{reclassified.ExceptionType}|{reclassified.Message}|{reclassified.Frame}";
+			merged[newKey] = merged.TryGetValue(newKey, out var existing)
+				? existing with { Count = existing.Count + reclassified.Count }
+				: reclassified;
+			if (degraded.Remove(key))
+				degraded.Add(newKey);
+			if (clean.Remove(key))
+				clean.Add(newKey);
+		}
 	}
 	if (malformed > 0)
 		Console.WriteLine($"  ({malformed} malformed ledger lines skipped)");
@@ -757,8 +1670,16 @@ static void WriteHtmlReport(string path, List<Finding> findings, int assemblies,
 	bool IsDegraded(Finding f) =>
 		degradedKeys?.Contains($"{f.Kind}|{f.ExceptionType}|{f.Message}|{f.Frame}") == true;
 	string Esc(string s) => s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
-	var html = new StringBuilder();
-	html.AppendLine("""
+	var fullPath = Path.GetFullPath(path);
+	var outputDir = Path.GetDirectoryName(fullPath)!;
+	Directory.CreateDirectory(outputDir);
+	var partsDir = Path.Combine(outputDir, Path.GetFileName(fullPath) + ".parts-" + Guid.NewGuid().ToString("N"));
+	Directory.CreateDirectory(partsDir);
+	var parts = new List<string>();
+	try
+	{
+		WritePart("000-header.html", writer => {
+			writer.WriteLine("""
 		<!doctype html><html><head><meta charset="utf-8"><title>nugetfuzz report</title>
 		<style>
 		:root { color-scheme: light dark; --bg:#fff; --fg:#1a1a1a; --muted:#666; --line:#d8d8d8; --chip:#f0f0f0; }
@@ -774,35 +1695,44 @@ static void WriteHtmlReport(string path, List<Finding> findings, int assemblies,
 		           color:#a8791f; border:1px solid #a8791f55; margin-left:6px; }
 		.ASSERT { border-left:4px solid #d97706; } .EXCEPTION { border-left:4px solid #dc2626; }
 		.TIMEOUT { border-left:4px solid #7c3aed; } .WARNING { border-left:4px solid #2563eb; }
+		.PDB { border-left:4px solid #0d9488; } .LEAK { border-left:4px solid #db2777; }
+		.OBFUSCATED { border-left:4px solid #64748b; }
 		#filter { width:100%; padding:8px; margin:8px 0; border:1px solid var(--line); border-radius:6px;
 		          background:var(--bg); color:var(--fg); font:13px ui-monospace,monospace; }
 		</style></head><body>
 		""");
-	html.AppendLine("<h1>nugetfuzz report</h1>");
-	html.AppendLine($"<div class=meta>{assemblies} assemblies, {types} types decompiled, "
-		+ $"{refsResolved}/{refsTotal} references resolved, {findings.Count} distinct findings "
-		+ $"({findings.Sum(f => f.Count)} total)"
-		+ (dumpDir != null ? $"<br>decompiled sources dumped to {Esc(dumpDir)}" : "") + "</div>");
-	html.AppendLine("<input id=filter placeholder='filter by message, type, package or frame'>");
-	foreach (var kind in new[] { "ASSERT", "EXCEPTION", "TIMEOUT", "WARNING" })
-	{
-		var group = findings.Where(f => f.Kind == kind).OrderByDescending(f => f.Count).ToList();
-		if (group.Count == 0)
-			continue;
-		html.AppendLine($"<h2>{kind} ({group.Count} distinct, {group.Sum(f => f.Count)} hits)</h2>");
-		foreach (var f in group)
+			writer.WriteLine("<h1>nugetfuzz report</h1>");
+			writer.WriteLine($"<div class=meta>{assemblies} assemblies, {types} types decompiled, "
+				+ $"{refsResolved}/{refsTotal} references resolved, {findings.Count} distinct findings "
+				+ $"({findings.Sum(f => f.Count)} total)"
+				+ (dumpDir != null ? $"<br>decompiled sources dumped to {Esc(dumpDir)}" : "") + "</div>");
+			writer.WriteLine("<input id=filter placeholder='filter by message, type, package or frame'>");
+		});
+
+		int partIndex = 1;
+		foreach (var kind in new[] { "ASSERT", "EXCEPTION", "TIMEOUT", "LEAK", "OBFUSCATED", "WARNING", "PDB" })
 		{
-			// Only ever seen while references were missing: flagged, not hidden - the
-			// warning text itself blames missing references, so it is weak evidence.
-			var suspect = IsDegraded(f)
-				? " <span class=suspect title='only seen in runs with unresolved references'>refs incomplete</span>"
-				: "";
-			html.AppendLine($"<details class={kind}><summary><span class=count>{f.Count}x</span> "
-				+ $"{Esc(f.ExceptionType)}: {Esc(f.Message)}{suspect}</summary>");
-			html.AppendLine($"<pre>first: {Esc(f.FirstLocation)}\nframe: {Esc(f.Frame)}\n\n{Esc(f.Detail)}</pre></details>");
+			var group = findings.Where(f => f.Kind == kind).OrderByDescending(f => f.Count).ToList();
+			if (group.Count == 0)
+				continue;
+			WritePart($"{partIndex++:000}-{kind}.html", writer => {
+				writer.WriteLine($"<h2>{kind} ({group.Count} distinct, {group.Sum(f => f.Count)} hits)</h2>");
+				foreach (var f in group)
+				{
+					// Only ever seen while references were missing: flagged, not hidden - the
+					// warning text itself blames missing references, so it is weak evidence.
+					var suspect = IsDegraded(f)
+						? " <span class=suspect title='only seen in runs with unresolved references'>refs incomplete</span>"
+						: "";
+					writer.WriteLine($"<details class={kind}><summary><span class=count>{f.Count}x</span> "
+						+ $"{Esc(f.ExceptionType)}: {Esc(f.Message)}{suspect}</summary>");
+					var context = f.Context.Length > 0 ? $"{Esc(f.Context)}\n" : "";
+					writer.WriteLine($"<pre>first: {Esc(f.FirstLocation)}\nframe: {Esc(f.Frame)}\n{context}\n{Esc(f.Detail)}</pre></details>");
+				}
+			});
 		}
-	}
-	html.AppendLine("""
+
+		WritePart("999-footer.html", writer => writer.WriteLine("""
 		<script>
 		const box = document.getElementById('filter');
 		box.addEventListener('input', () => {
@@ -812,8 +1742,33 @@ static void WriteHtmlReport(string path, List<Finding> findings, int assemblies,
 		});
 		</script>
 		</body></html>
-		""");
-	File.WriteAllText(path, html.ToString());
+		"""));
+
+		var tempOutput = fullPath + ".tmp";
+		using (var output = File.Create(tempOutput))
+		{
+			foreach (var part in parts)
+			{
+				using var input = File.OpenRead(part);
+				input.CopyTo(output);
+			}
+		}
+		File.Move(tempOutput, fullPath, true);
+	}
+	finally
+	{
+		Directory.Delete(partsDir, true);
+	}
+
+	void WritePart(string fileName, Action<StreamWriter> write)
+	{
+		var part = Path.Combine(partsDir, fileName);
+		using (var writer = new StreamWriter(part, false, Encoding.UTF8))
+		{
+			write(writer);
+		}
+		parts.Add(part);
+	}
 }
 
 static string SanitizeFileName(string s)
@@ -825,10 +1780,41 @@ static string FirstLine(string s)
 	return i < 0 ? s : s[..i];
 }
 
+static bool IsNonPrintable(char ch)
+{
+	return char.GetUnicodeCategory(ch) is UnicodeCategory.Control
+		or UnicodeCategory.Format
+		or UnicodeCategory.Surrogate
+		or UnicodeCategory.OtherNotAssigned;
+}
+
+static bool IsCompilerGeneratedNameLeak(string name)
+{
+	if (name.Any(IsNonPrintable))
+		return false;
+	var simpleName = name[(name.LastIndexOf('.') + 1)..];
+	return simpleName.StartsWith('<') || name.Contains('$');
+}
+
+static Finding? TryReclassifyObfuscatedLeak(Finding finding)
+{
+	const string prefix = "leaked compiler-generated name: ";
+	if (!finding.Message.StartsWith(prefix, StringComparison.Ordinal))
+		return null;
+	var name = finding.Message[prefix.Length..];
+	if (IsCompilerGeneratedNameLeak(name))
+		return null;
+	return finding with {
+		Kind = "OBFUSCATED",
+		ExceptionType = nameof(ObfuscatedName),
+		Message = "obfuscated name: " + name
+	};
+}
+
 // One deduplicated defect: Count counts every location that hit it, Detail keeps the
 // full exception text of the first one for triage.
 record Finding(string Kind, string ExceptionType, string Message, string Frame,
-	string FirstLocation, string Detail, int Count)
+	string FirstLocation, string Detail, int Count, string Context = "")
 {
 	public string Describe()
 		=> $"[{Kind}] {ExceptionType}: {Message} @ {Frame}  (first: {FirstLocation})";
@@ -837,19 +1823,152 @@ record Finding(string Kind, string ExceptionType, string Message, string Frame,
 // One line of the sweep ledger: either a deduplicated finding or a per-run totals record.
 record LedgerEntry(string Record, string Kind, string ExceptionType, string Message, string Frame,
 	string FirstLocation, string Detail, int Count, int Assemblies, int Types,
-	long RefsResolved, long RefsTotal);
+	long RefsResolved, long RefsTotal, string Context = "");
 
 record VersionIndex(string[] versions);
+
+// What the PDB lint needs to know about a method body, read from the assembly alone.
+record BodyFacts(int CodeSize, HashSet<int> InstructionOffsets, HashSet<int> CatchHandlerStarts, int LocalCount);
 
 class AssertionFailedException(string message) : Exception(message);
 
 class DecompilerWarning(string message) : Exception(message);
+
+// A compiler-generated name that reached the output. The message keeps only the shape of
+// the name - the part in angle brackets is the enclosing member and the digits are per
+// occurrence - so that one bucket collects every hit of the same unfolded construct.
+class LeakedName(string name)
+	: Exception("leaked compiler-generated name: "
+		+ Regex.Replace(Regex.Replace(name, "<[^<>]*>", "<>"), "[0-9]+", "N"));
+
+// An invalid identifier with non-printable characters. C# compilers use printable characters
+// for generated names; non-printable names are treated as obfuscator output so they do not get
+// mixed into compiler-generated-name leak buckets.
+class ObfuscatedName(string name)
+	: Exception("obfuscated name: " + NameShape(name))
+{
+	static string NameShape(string name)
+	{
+		var builder = new StringBuilder(name.Length);
+		foreach (var ch in name)
+		{
+			if (char.GetUnicodeCategory(ch) is UnicodeCategory.Control
+				or UnicodeCategory.Format
+				or UnicodeCategory.Surrogate
+				or UnicodeCategory.OtherNotAssigned)
+			{
+				builder.Append($"\\u{(int)ch:X4}");
+			}
+			else
+			{
+				builder.Append(ch);
+			}
+		}
+		return Regex.Replace(builder.ToString(), "[0-9]+", "N");
+	}
+}
+
+sealed class LineWriter : IDisposable
+{
+	readonly StreamWriter writer;
+
+	public LineWriter(string path)
+	{
+		writer = new StreamWriter(path, append: false, Encoding.UTF8);
+	}
+
+	public void AppendLine(string text)
+	{
+		writer.WriteLine(text);
+	}
+
+	public void Dispose()
+	{
+		writer.Dispose();
+	}
+}
+
+// A defect in a generated PDB. The message describes the shape of the defect and never the
+// instance that hit it - Report() dedupes on the message, so naming a method or an offset in it
+// would turn one bug into one finding per method.
+class PdbFinding(string message) : Exception(message);
+
+// Records assertion failures instead of throwing them. Debug.Assert unwinding out of the middle
+// of PortablePdbWriter would leave no PDB to check, and the writer is known to assert on
+// real-world input; with Trace.Listeners holding only this one, execution continues past the
+// assert and still produces a PDB to look at. The call site has to be captured here: nothing
+// throws, so there is no stack left to read afterwards, and a message-less Debug.Assert would
+// otherwise be reported as an empty string naming no code at all.
+class CollectAsserts(List<string> messages) : TraceListener
+{
+	public override void Fail(string? message, string? detailMessage)
+	{
+		var frame = Environment.StackTrace.Split('\n').Select(l => l.Trim())
+			.FirstOrDefault(l => l.Contains("ICSharpCode.Decompiler")) ?? "";
+		messages.Add($"{message} {detailMessage}".Trim() + $" @ {frame}");
+	}
+	public override void Write(string? message)
+	{
+	}
+	public override void WriteLine(string? message)
+	{
+	}
+}
 
 // Resolves assembly references from the given directories (in priority order) before
 // falling back to the wrapped resolver, and records every resolution and its outcome.
 // The wrapped UniversalAssemblyResolver consults the installed runtime BEFORE its search
 // directories, which lets runtime stub facades shadow ref-pack assemblies - hence the
 // directory probing happens here, in our order.
+static class AssemblyReferenceCompatibility
+{
+	public static string? Find(IEnumerable<string> dirs, IAssemblyReference reference)
+	{
+		foreach (var dir in dirs)
+		{
+			var path = Path.Combine(dir, reference.Name + ".dll");
+			if (!File.Exists(path))
+				continue;
+			try
+			{
+				using var file = new PEFile(path);
+				if (Matches(file, reference))
+					return path;
+			}
+			catch (Exception)
+			{
+				// Keep probing lower-priority directories after a corrupt candidate.
+			}
+		}
+		return null;
+	}
+
+	public static bool Matches(MetadataFile file, IAssemblyReference reference)
+	{
+		if (!file.IsAssembly)
+			return false;
+		var actual = AssemblyNameReference.Parse(file.FullName);
+		if (!string.Equals(actual.Name, reference.Name, StringComparison.OrdinalIgnoreCase))
+			return false;
+		if (reference.Version is { } requestedVersion
+			&& !IsZeroOrAllOnes(requestedVersion)
+			&& actual.Version != requestedVersion
+			&& !reference.IsRetargetable)
+		{
+			return false;
+		}
+		var requestedToken = reference.PublicKeyToken;
+		return requestedToken == null || requestedToken.Length == 0
+			|| requestedToken.SequenceEqual(actual.PublicKeyToken ?? Array.Empty<byte>());
+	}
+
+	static bool IsZeroOrAllOnes(Version version)
+		=> version.Major is 0 or -1
+			&& version.Minor is 0 or -1
+			&& version.Build is 0 or -1
+			&& version.Revision is 0 or -1;
+}
+
 class LoggingResolver(IAssemblyResolver inner, List<string> dirs, Func<IAssemblyReference, bool> onMiss) : IAssemblyResolver
 {
 	public readonly Dictionary<string, string?> Resolutions = new();
@@ -859,12 +1978,18 @@ class LoggingResolver(IAssemblyResolver inner, List<string> dirs, Func<IAssembly
 
 	public MetadataFile? Resolve(IAssemblyReference reference)
 	{
-		var file = ResolveFromDirs(reference) ?? inner.Resolve(reference);
+		var file = ResolveFromDirs(reference);
+		if (file == null)
+		{
+			file = inner.Resolve(reference);
+			if (file != null && !AssemblyReferenceCompatibility.Matches(file, reference))
+				file = null;
+		}
 		if (file == null && onMiss(reference))
 		{
 			lock (loaded)
 			{
-				loaded.Remove(reference.Name);
+				loaded.Remove(reference.FullName);
 			}
 			file = ResolveFromDirs(reference);
 		}
@@ -886,7 +2011,7 @@ class LoggingResolver(IAssemblyResolver inner, List<string> dirs, Func<IAssembly
 		}
 		lock (loaded)
 		{
-			if (loaded.TryGetValue(reference.Name, out var cached))
+			if (loaded.TryGetValue(reference.FullName, out var cached))
 				return cached;
 			MetadataFile? result = null;
 			foreach (var dir in snapshot)
@@ -896,15 +2021,20 @@ class LoggingResolver(IAssemblyResolver inner, List<string> dirs, Func<IAssembly
 					continue;
 				try
 				{
-					result = new PEFile(path);
-					break;
+					var candidate = new PEFile(path);
+					if (AssemblyReferenceCompatibility.Matches(candidate, reference))
+					{
+						result = candidate;
+						break;
+					}
+					candidate.Dispose();
 				}
 				catch (Exception)
 				{
 					// unreadable candidate; keep probing lower-priority dirs
 				}
 			}
-			loaded[reference.Name] = result;
+			loaded[reference.FullName] = result;
 			return result;
 		}
 	}

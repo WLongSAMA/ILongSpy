@@ -74,12 +74,6 @@
     <PackageReference Include="System.Reflection.Metadata" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
     <PackageReference Include="Microsoft.CodeAnalysis.VisualBasic" />
-    <PackageReference Include="Microsoft.DiaSymReader.Converter.Xml" />
-    <PackageReference Include="Microsoft.DiaSymReader" />
-    <!-- Referenced unconditionally so restore yields the same packages.lock.json on every OS.
-         The native asset only resolves for win-* RIDs; non-Windows builds ignore it, and the
-         tests that use it are gated by OperatingSystem.IsWindows() + Assert.Ignore at runtime. -->
-    <PackageReference Include="Microsoft.DiaSymReader.Native" />
     <PackageReference Include="NUnit3TestAdapter" />
     <PackageReference Include="coverlet.MTP" />
     <PackageReference Include="NUnit" />
@@ -109,11 +103,13 @@
     <None Include="TestCases\Correctness\StackTests.il" />
     <None Include="TestCases\Correctness\StackTypes.il" />
     <None Include="TestCases\Correctness\Uninit.vb" />
+    <None Include="TestCases\Correctness\VBOnErrorCorrectness.vb" />
     <None Include="TestCases\Disassembler\Pretty\GenericConstraints.il" />
     <None Include="TestCases\Disassembler\Pretty\NegativeConstants.il" />
     <None Include="TestCases\Disassembler\Pretty\InterfaceImplAttributes.il" />
     <None Include="TestCases\Disassembler\Pretty\SortMembers.expected.il" />
     <None Include="TestCases\Disassembler\Pretty\SortMembers.il" />
+    <None Include="TestCases\IsolatedDecompilation\AccessorDelegateReference.il" />
     <None Include="TestCases\IsolatedDecompilation\IsolatedStaticCtor.il" />
     <None Include="TestCases\ILPretty\ExtensionEncodingV2.il" />
     <None Include="testcases\ilpretty\ExtensionEncodingV1.il" />
@@ -161,6 +157,8 @@
     <None Include="TestCases\VBPretty\VBAutomaticEvents.vb" />
     <None Include="TestCases\VBPretty\VBNonGenericForEach.vb" />
     <None Include="TestCases\VBPretty\YieldReturn.vb" />
+    <None Include="TestCases\VBPretty\VBTryCatchFinally.vb" />
+    <None Include="TestCases\VBPretty\VBOnError.vb" />
     <None Include="TestCases\VBPretty\Issue1906.vb" />
     <None Include="TestCases\VBPretty\Issue2192.vb" />
     <None Include="TestCases\VBPretty\Select.vb" />
@@ -224,6 +222,20 @@
     <Compile Remove="TestCases\ILPretty\Issue3729.cs" />
     <None Include="TestCases\ILPretty\Issue3729.cs" />
     <None Include="TestCases\ILPretty\Issue3729.il" />
+    <Compile Remove="TestCases\VBPretty\Issue3659.cs" />
+    <None Include="TestCases\VBPretty\Issue3659.cs" />
+    <Compile Remove="TestCases\ILPretty\ParameterizedPropertyInitializer.cs" />
+    <None Include="TestCases\ILPretty\ParameterizedPropertyInitializer.cs" />
+    <None Include="TestCases\ILPretty\ParameterizedPropertyInitializer.il" />
+    <Compile Remove="TestCases\ILPretty\ParamsPropertySetter.cs" />
+    <None Include="TestCases\ILPretty\ParamsPropertySetter.cs" />
+    <None Include="TestCases\ILPretty\ParamsPropertySetter.il" />
+    <Compile Remove="TestCases\ILPretty\IndexerAccessorParameterNames.cs" />
+    <None Include="TestCases\ILPretty\IndexerAccessorParameterNames.cs" />
+    <None Include="TestCases\ILPretty\IndexerAccessorParameterNames.il" />
+    <Compile Remove="TestCases\ILPretty\ParameterizedPropertySetterCall.cs" />
+    <None Include="TestCases\ILPretty\ParameterizedPropertySetterCall.cs" />
+    <None Include="TestCases\ILPretty\ParameterizedPropertySetterCall.il" />
     <Compile Remove="TestCases\ILPretty\SpanConversionOperatorMismatch.cs" />
     <None Include="TestCases\ILPretty\SpanConversionOperatorMismatch.cs" />
     <Compile Remove="TestCases\ILPretty\FSharpLoops_Debug.cs" />
@@ -268,6 +280,10 @@
     <None Include="TestCases\Pretty\NullableRefTypes.cs" />
     <Compile Remove="TestCases\Ugly\AggressiveScalarReplacementOfAggregates.Expected.cs" />
     <None Include="TestCases\Ugly\AggressiveScalarReplacementOfAggregates.Expected.cs" />
+    <Compile Remove="TestCases\Ugly\QualifiedMethodGroup.Expected.cs" />
+    <None Include="TestCases\Ugly\QualifiedMethodGroup.Expected.cs" />
+    <Compile Remove="TestCases\Ugly\BaseQualifier.Expected.cs" />
+    <None Include="TestCases\Ugly\BaseQualifier.Expected.cs" />
     <Compile Remove="TestCases\Ugly\NoArrayInitializers.Expected.cs" />
     <None Include="TestCases\Ugly\NoArrayInitializers.Expected.cs" />
     <Compile Remove="TestCases\Ugly\NoAutomaticProperties.Expected.cs" />
@@ -304,6 +320,8 @@
     <None Include="TestCases\Ugly\TopLevelProgramAsync.Expected.cs" />
     <Compile Remove="TestCases\VBPretty\VBCompoundAssign.cs" />
     <None Include="TestCases\VBPretty\VBCompoundAssign.cs" />
+    <Compile Remove="TestCases\VBPretty\VBOnError.cs" />
+    <None Include="TestCases\VBPretty\VBOnError.cs" />
   </ItemGroup>
 
 </Project>

@@ -20,7 +20,9 @@ using System.Linq;
 using System.Reflection.Metadata;
 using System.Threading.Tasks;
 
+using Avalonia.Headless;
 using Avalonia.Headless.NUnit;
+using Avalonia.Input;
 
 using AwesomeAssertions;
 
@@ -46,17 +48,7 @@ namespace ICSharpCode.ILSpy.Tests.Analyzers;
 public class AnalyzeContextMenuTests
 {
 	[AvaloniaTest]
-	public async Task Analyze_Entry_Is_Registered_With_The_Localised_Header()
-	{
-		await TestHarness.BootAsync();
-
-		var registry = AppComposition.Current.GetExport<ContextMenuEntryRegistry>();
-		registry.Entries.Should().Contain(e => e.Metadata.Header == nameof(Resources.Analyze),
-			"the analyze context-menu entry must reach the right-click menu through the MEF registry");
-	}
-
-	[AvaloniaTest]
-	public async Task Analyze_Entry_Is_Visible_For_Member_Tree_Nodes_And_Hidden_For_AssemblyTreeNode()
+	public async Task Analyze_Entry_Is_Visible_And_Enabled_Only_For_Member_Tree_Nodes()
 	{
 		// AnalyzeContextMenuEntry visibility contract: visible when every selected node is
 		// an IMemberTreeNode (types, methods, fields, properties, events), hidden otherwise.
@@ -79,6 +71,15 @@ public class AnalyzeContextMenuTests
 			.Should().BeFalse("no selection means no entity to analyse");
 		entry.IsVisible(new TextViewContext { SelectedTreeNodes = System.Array.Empty<SharpTreeNode>() })
 			.Should().BeFalse("an empty selection must hide the entry");
+
+		// IsEnabled must judge the same node shape as IsVisible: a selection that contains a
+		// non-member node is hidden, so it must not report itself as enabled either (a filter over
+		// the member subset would call a type-plus-assembly selection analysable).
+		var mixed = new TextViewContext { SelectedTreeNodes = new SharpTreeNode[] { typeNode, assemblyNode } };
+		entry.IsVisible(mixed).Should().BeFalse("a mixed selection hides the entry");
+		entry.IsEnabled(mixed).Should().BeFalse("a mixed selection must be disabled, not enabled-but-hidden");
+		entry.IsEnabled(new TextViewContext { SelectedTreeNodes = new SharpTreeNode[] { assemblyNode } })
+			.Should().BeFalse("a selection without any member node has nothing to analyse");
 	}
 
 	[AvaloniaTest]
@@ -106,60 +107,21 @@ public class AnalyzeContextMenuTests
 	}
 
 	[AvaloniaTest]
-	public async Task Executing_Analyze_Pushes_The_Selected_Entity_Into_The_Analyzer_Pane()
+	public async Task Analyze_Command_CanExecute_Tracks_The_Assembly_Tree_Selection()
 	{
-		// Execute calls AnalyzerTreeViewModel.Analyze for every IMemberTreeNode in the
-		// selection. The pane's Root.Children must hold one AnalyzedTypeTreeNode wrapping
-		// the same type definition after the call.
-
 		var (_, vm) = await TestHarness.BootAsync();
+		var command = AppComposition.Current.GetExport<AnalyzeCommand>();
 
-		var entry = AppComposition.Current.GetExport<ContextMenuEntryRegistry>()
-			.GetEntry(nameof(Resources.Analyze));
-
-		var typeNode = vm.AssemblyTreeModel.FindNode<TypeTreeNode>(
-			"System.Linq", "System.Linq", "System.Linq.Enumerable");
-
-		var analyzerVm = AppComposition.Current.GetExport<AnalyzerTreeViewModel>();
-		var beforeCount = analyzerVm.Root.Children.Count;
-
-		entry.Execute(new TextViewContext { SelectedTreeNodes = new[] { (SharpTreeNode)typeNode } });
-		TestCapture.Step("analyze-executed");
-
-		analyzerVm.Root.Children.Count.Should().Be(beforeCount + 1,
-			"Execute on the analyze entry must add exactly one new row to the pane root");
-		(analyzerVm.Root.Children.Last() is AnalyzerEntityTreeNode).Should().BeTrue(
-			"the new pane row must be an entity wrapper that exposes the analysed member");
-	}
-
-	[AvaloniaTest]
-	public async Task Pressing_Ctrl_R_On_The_Assembly_Tree_Analyses_The_Selected_Member()
-	{
-		// Ctrl+R while a member is selected on the assembly tree pane must surface the
-		// member in the analyzer pane — the same end-state as right-click + Analyze.
-
-		var (window, vm) = await TestHarness.BootAsync();
-
-		var pane = await window.WaitForComponent<ICSharpCode.ILSpy.AssemblyTree.AssemblyListPane>();
 		var typeNode = vm.AssemblyTreeModel.FindNode<TypeTreeNode>(
 			"System.Linq", "System.Linq", "System.Linq.Enumerable");
 		vm.AssemblyTreeModel.SelectNode(typeNode);
-		TestCapture.Step("type-selected");
 
-		var analyzerVm = AppComposition.Current.GetExport<AnalyzerTreeViewModel>();
-		var beforeCount = analyzerVm.Root.Children.Count;
+		command.CanExecute(null).Should().BeTrue("a selected member can be analyzed");
 
-		var grid = await pane.WaitForComponent<ICSharpCode.ILSpy.Controls.TreeView.SharpTreeView>();
-		grid.RaiseEvent(new global::Avalonia.Input.KeyEventArgs {
-			Key = global::Avalonia.Input.Key.R,
-			KeyModifiers = global::Avalonia.Input.KeyModifiers.Control,
-			RoutedEvent = global::Avalonia.Input.InputElement.KeyDownEvent,
-			Source = grid,
-		});
-		TestCapture.Step("ctrl-r-pressed");
+		var assemblyNode = vm.AssemblyTreeModel.FindNode<AssemblyTreeNode>("System.Linq");
+		vm.AssemblyTreeModel.SelectNode(assemblyNode);
 
-		analyzerVm.Root.Children.Count.Should().Be(beforeCount + 1,
-			"Ctrl+R with a type selected must analyse it");
+		command.CanExecute(null).Should().BeFalse("assembly nodes are not analyzable members");
 	}
 
 	[AvaloniaTest]
@@ -258,6 +220,8 @@ public class AnalyzeContextMenuTests
 			.First(m => m.MethodDefinition.Name == "Empty").MethodDefinition;
 
 		entry.Execute(new TextViewContext { SelectedTreeNodes = new SharpTreeNode[] { typeNode } });
+		analyzerVm.Root.Children.Should().ContainSingle(
+			"Execute on a tree node must add exactly one entity row to the pane root");
 		var rootRow = analyzerVm.Root.Children.OfType<AnalyzerEntityTreeNode>().Last();
 		rootRow.EnsureLazyChildren();
 		// A result row lives underneath an analyzer-search header, never directly under the root.

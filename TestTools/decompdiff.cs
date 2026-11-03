@@ -24,19 +24,26 @@
 // changes across real-world code. The textual complement to the Windows
 // round-trip tests, which verify correctness but not output quality.
 //
-// usage: dotnet run decompdiff.cs -- --old <commit-ish|ILSpy-checkout|Decompiler.dll> --new <...>
-//                                    [-o <report-dir>] [--no-build] [--refs <dir>]... <dll|dir|@list>...
+// usage: dotnet run decompdiff.cs -- [--old <commit-ish|ILSpy-checkout|Decompiler.dll>] --new <...>
+//                                    [-o <report-dir>] [--build|--no-build] [-j <jobs>] [--refs <dir>]... [--packages <@list>] <dll|dir|@list>...
+// short form: dotnet run decompdiff.cs -- <package-list.txt>
 //
-// - checkout args are built (Release; restore keeps packages.lock.json whole via
+// - assemblies are decompiled in parallel (-j/--jobs, default: processor count).
+// - checkout args are built by default (Release; restore keeps packages.lock.json whole via
 //   -p:RestoreEnablePackagePruning=false) on every run, because a build older than
 //   the checkout measures code that is not the one named; pass --no-build to reuse
 //   the build a checkout already carries.
+// - when --old is omitted, it defaults to the merge-base of origin/master and --new.
+// - when --old and --new are omitted, they default to the merge-base of origin/master and the
+//   current worktree.
 // - a commit-ish (branch, tag, sha, FETCH_HEAD) is resolved against the repository
 //   the tool is run from and checked out into a worktree under
 //   ~/.cache/decompdiff/<repo>/<commit>, kept and reused so a rerun keeps the
 //   Release build it already contains.
 // - corpus dirs are scanned recursively for *.dll (e.g. ~/.cache/nugetfuzz); @list reads
 //   the entries from a file, one per line, as nugetfuzz does with its package list.
+// - --packages passes an @list of package IDs through nugetfuzz --download-only and uses the
+//   resolved lib directories as the corpus.
 // - changed/errored types are written to <report-dir>/{old,new}/...; inspect with
 //   `git diff --no-index <report-dir>/old <report-dir>/new`, or open the generated
 //   <report-dir>/index.html, which carries the same data with inline diffs.
@@ -76,14 +83,20 @@ catch (AssertionFailedException)
 	// hook works
 }
 
-string? oldSpec = null, newSpec = null, reportDir = null;
-bool skipBuild = false;
+string? oldSpec = null, newSpec = null, reportDir = null, packageList = null;
+bool build = true;
+int jobs = Environment.ProcessorCount;
+bool help = false;
 var corpus = new List<string>();
 var refDirs = new List<string>();
 for (int i = 0; i < args.Length; i++)
 {
 	switch (args[i])
 	{
+		case "--help":
+		case "-h":
+			help = true;
+			break;
 		case "--old":
 			oldSpec = args[++i];
 			break;
@@ -94,13 +107,20 @@ for (int i = 0; i < args.Length; i++)
 			reportDir = args[++i];
 			break;
 		case "--build":
-			// Building is what happens anyway; accepted so older invocations keep working.
+			build = true;
 			break;
 		case "--no-build":
-			skipBuild = true;
+			build = false;
 			break;
 		case "--refs":
 			refDirs.Add(args[++i]);
+			break;
+		case "-j":
+		case "--jobs":
+			jobs = Math.Max(1, int.Parse(args[++i]));
+			break;
+		case "--packages":
+			packageList = args[++i];
 			break;
 		default:
 			// @file lists corpus entries one per line, the same spelling nugetfuzz uses. Shells
@@ -118,9 +138,91 @@ for (int i = 0; i < args.Length; i++)
 			break;
 	}
 }
-if (oldSpec == null || newSpec == null || corpus.Count == 0)
+if (help)
 {
-	Console.Error.WriteLine("usage: decompdiff --old <commit-ish|ILSpy-checkout|Decompiler.dll> --new <...> [-o report-dir] [--no-build] [--refs <dir>]... <dll|dir|@list>...");
+	Console.WriteLine("decompdiff - compare decompiler output from two builds");
+	Console.WriteLine();
+	Console.WriteLine("Usage:");
+	Console.WriteLine("  dotnet run decompdiff.cs -- [--old <spec>] --new <spec> [options] <dll|dir|@list>...");
+	Console.WriteLine("  dotnet run decompdiff.cs -- <package-list.txt>");
+	Console.WriteLine();
+	Console.WriteLine("Options:");
+	Console.WriteLine("  --old <spec>       Old decompiler DLL, checkout, or commit-ish");
+	Console.WriteLine("  --new <spec>       New decompiler DLL, checkout, or commit-ish");
+	Console.WriteLine("  -o <dir>           Report directory (default: decompdiff-report)");
+	Console.WriteLine("  --build            Build checkout inputs (default)");
+	Console.WriteLine("  --no-build         Reuse existing checkout builds");
+	Console.WriteLine("  -j, --jobs <n>     Maximum assemblies to process concurrently");
+	Console.WriteLine("  --refs <dir>       Additional reference assembly directory (repeatable)");
+	Console.WriteLine("  --packages <@file> Download package IDs through nugetfuzz");
+	Console.WriteLine("  -h, --help         Show this help");
+	return 0;
+}
+if (packageList == null && corpus.Count == 1 && File.Exists(corpus[0])
+	&& Path.GetExtension(corpus[0]).Equals(".txt", StringComparison.OrdinalIgnoreCase))
+{
+	packageList = "@" + corpus[0];
+	corpus.Clear();
+}
+if (oldSpec == null && newSpec == null && packageList != null)
+{
+	newSpec = ".";
+	oldSpec = Side.GetMergeBase("HEAD");
+}
+if (newSpec == null)
+{
+	Console.Error.WriteLine("usage: decompdiff [--old <commit-ish|ILSpy-checkout|Decompiler.dll>] --new <...> [-o report-dir] [--build|--no-build] [--refs <dir>]... [--packages <@list>] <dll|dir|@list>...");
+	return 1;
+}
+if (oldSpec == null)
+{
+	try
+	{
+		oldSpec = Side.GetMergeBase(newSpec);
+	}
+	catch (ArgumentException ex)
+	{
+		Console.Error.WriteLine(ex.Message);
+		return 1;
+	}
+}
+if (packageList != null)
+{
+	var listPath = packageList.StartsWith('@') ? packageList[1..] : packageList;
+	if (!File.Exists(listPath))
+	{
+		Console.Error.WriteLine($"--packages: file not found: {listPath}");
+		return 1;
+	}
+	var nugetfuzz = Path.Combine(Environment.CurrentDirectory, "nugetfuzz.cs");
+	if (!File.Exists(nugetfuzz))
+		nugetfuzz = Path.Combine(Environment.CurrentDirectory, "TestTools", "nugetfuzz.cs");
+	if (!File.Exists(nugetfuzz))
+	{
+		Console.Error.WriteLine($"--packages requires nugetfuzz.cs in {Environment.CurrentDirectory} or its TestTools subdirectory");
+		return 1;
+	}
+	var corpusFile = Path.Combine(Path.GetTempPath(), $"decompdiff-{Guid.NewGuid():N}.corpus.txt");
+	try
+	{
+		Side.Run("dotnet", $"run \"{nugetfuzz}\" -- --download-only --corpus-out \"{corpusFile}\" \"@{Path.GetFullPath(listPath)}\"");
+		corpus.AddRange(File.ReadAllLines(corpusFile)
+			.Select(l => l.Trim())
+			.Where(l => l.Length > 0 && !l.StartsWith('#')));
+	}
+	catch (Exception ex)
+	{
+		Console.Error.WriteLine($"--packages failed: {ex.Message}");
+		return 1;
+	}
+	finally
+	{
+		File.Delete(corpusFile);
+	}
+}
+if (corpus.Count == 0)
+{
+	Console.Error.WriteLine("usage: decompdiff [--old <commit-ish|ILSpy-checkout|Decompiler.dll>] --new <...> [-o report-dir] [--build|--no-build] [--refs <dir>]... [--packages <@list>] <dll|dir|@list>...");
 	return 1;
 }
 reportDir ??= "decompdiff-report";
@@ -138,8 +240,8 @@ Directory.CreateDirectory(reportDir);
 Side oldSide, newSide;
 try
 {
-	oldSide = Side.Create("old", oldSpec, skipBuild);
-	newSide = Side.Create("new", newSpec, skipBuild);
+	oldSide = Side.Create("old", oldSpec, build);
+	newSide = Side.Create("new", newSpec, build);
 }
 catch (ArgumentException ex)
 {
@@ -151,12 +253,14 @@ catch (ArgumentException ex)
 Console.WriteLine($"old: {oldSide.Description}");
 Console.WriteLine($"new: {newSide.Description}");
 
+var pathComparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 var assemblies = corpus
 	.SelectMany(a => Directory.Exists(a)
 		? Directory.EnumerateFiles(a, "*.dll", SearchOption.AllDirectories)
 		: [a])
+	.Select(Path.GetFullPath)
 	.Where(f => !f.EndsWith(".resources.dll", StringComparison.OrdinalIgnoreCase))
-	.Distinct()
+	.Distinct(pathComparer)
 	.OrderBy(f => f)
 	.ToList();
 Console.WriteLine($"corpus: {assemblies.Count} assemblies");
@@ -174,73 +278,34 @@ int newErrors = 0, fixedErrors = 0, bothErrors = 0;
 var oldTotals = default(Metrics);
 var newTotals = default(Metrics);
 
-foreach (var dll in assemblies)
+var results = new AsmResult[assemblies.Count];
+var progressLock = new object();
+int completedAssemblies = 0;
+Parallel.For(0, assemblies.Count, new ParallelOptions { MaxDegreeOfParallelism = jobs }, idx => {
+	results[idx] = ProcessAssembly(assemblies[idx]);
+	lock (progressLock)
+		RenderProgress(++completedAssemblies, assemblies.Count);
+});
+Console.WriteLine();
+
+// Merged in corpus order so the report does not depend on scheduling.
+foreach (var r in results)
 {
-	var asmName = Path.GetFileNameWithoutExtension(dll);
-	var (staged, missing) = RefIndex.Stage(dll, stageRoot, refIndex);
-	if (missing.Count > 0)
-		unresolvedRefs[asmName] = missing;
-	var oldTypes = oldSide.DecompileAssembly(staged);
-	if (oldTypes == null)
-	{
-		var why = missing.Count > 0 ? $"; unresolved refs: {string.Join(", ", missing.Take(5))}" : "";
-		Console.WriteLine($"  skip {asmName}: not decompilable ({oldSide.LastAssemblyError}{why})");
-		skipped.Add($"{asmName}: {oldSide.LastAssemblyError}{why}");
-		continue;
-	}
-	var newTypes = newSide.DecompileAssembly(staged);
-	if (newTypes == null)
-	{
-		Console.WriteLine($"  NEW-ERROR {asmName}: whole assembly failed only with new version ({newSide.LastAssemblyError})");
-		transitions.Add($"NEW-ERROR (assembly) {asmName}: {newSide.LastAssemblyError}");
-		newErrors++;
-		continue;
-	}
-	asmCount++;
-	int asmChanged = 0;
-	foreach (var name in oldTypes.Keys.Union(newTypes.Keys).OrderBy(n => n))
-	{
-		var o = oldTypes.GetValueOrDefault(name);
-		var n = newTypes.GetValueOrDefault(name);
-		var location = $"{asmName} / {name}";
-		if (o == null || n == null)
-		{
-			transitions.Add($"only-{(o != null ? "old" : "new")} {location}");
-			continue;
-		}
-		if (o.Error != null || n.Error != null)
-		{
-			if (o.Error != null && n.Error != null)
-			{
-				bothErrors++;
-				if (o.Error != n.Error)
-					transitions.Add($"error-changed {location}: {o.Error} -> {n.Error}");
-			}
-			else if (o.Error != null)
-			{
-				fixedErrors++;
-				transitions.Add($"fixed-error {location}: {o.Error}");
-			}
-			else
-			{
-				newErrors++;
-				transitions.Add($"NEW-ERROR {location}: {n.Error}");
-				DumpPair(location, o.Code!, $"// ERROR: {n.Error}");
-			}
-			continue;
-		}
-		oldTotals += o.Metrics;
-		newTotals += n.Metrics;
-		if (o.Code == n.Code)
-		{
-			unchanged++;
-			continue;
-		}
-		asmChanged++;
-		changed.Add(new ChangedType(location, o.Metrics, n.Metrics));
-		DumpPair(location, o.Code!, n.Code!);
-	}
-	Console.WriteLine($"  {asmName}: {oldTypes.Count} types, {asmChanged} changed");
+	Console.WriteLine(r.Log);
+	if (r.Missing.Count > 0)
+		unresolvedRefs[r.Name] = r.Missing;
+	if (r.Skipped != null)
+		skipped.Add(r.Skipped);
+	if (r.Counted)
+		asmCount++;
+	unchanged += r.Unchanged;
+	changed.AddRange(r.Changed);
+	transitions.AddRange(r.Transitions);
+	newErrors += r.NewErrors;
+	fixedErrors += r.FixedErrors;
+	bothErrors += r.BothErrors;
+	oldTotals += r.OldTotals;
+	newTotals += r.NewTotals;
 }
 
 var summary = new StringBuilder();
@@ -255,7 +320,7 @@ summary.AppendLine($"|---|---|---|---|");
 summary.AppendLine(MetricRow("lines", oldTotals.Lines, newTotals.Lines));
 summary.AppendLine(MetricRow("goto statements", oldTotals.Gotos, newTotals.Gotos));
 summary.AppendLine(MetricRow("//IL_ warning comments", oldTotals.IlWarnings, newTotals.IlWarnings));
-summary.AppendLine(MetricRow("compiler-generated name leaks (<>)", oldTotals.GeneratedNames, newTotals.GeneratedNames));
+summary.AppendLine(MetricRow("compiler-generated name leaks", oldTotals.GeneratedNames, newTotals.GeneratedNames));
 summary.AppendLine();
 summary.AppendLine($"types: {unchanged} unchanged, {changed.Count} changed, {newErrors} NEW errors, {fixedErrors} fixed errors, {bothErrors} errored in both");
 summary.AppendLine();
@@ -306,14 +371,115 @@ Console.WriteLine();
 Console.Write(summary);
 return newErrors > 0 ? 1 : 0;
 
-void DumpPair(string location, string oldCode, string newCode)
+void RenderProgress(int completed, int total)
 {
+	const int width = 30;
+	int filled = total == 0 ? width : completed * width / total;
+	string bar = new string('#', filled) + new string('-', width - filled);
+	Console.Write($"\rdecompiling [{bar}] {completed}/{total}");
+}
+
+AsmResult ProcessAssembly(string dll)
+{
+	var asmName = Path.GetFileNameWithoutExtension(dll);
+	var r = new AsmResult(asmName);
+	var (staged, missing) = RefIndex.Stage(dll, stageRoot, refIndex);
+	r.Missing = missing;
+	var (oldTypes, oldError) = oldSide.DecompileAssembly(staged);
+	if (oldTypes == null)
+	{
+		var why = missing.Count > 0 ? $"; unresolved refs: {string.Join(", ", missing.Take(5))}" : "";
+		r.Log = $"  skip {asmName}: not decompilable ({oldError}{why})";
+		r.Skipped = $"{asmName}: {oldError}{why}";
+		return r;
+	}
+	var (newTypes, newError) = newSide.DecompileAssembly(staged);
+	if (newTypes == null)
+	{
+		r.Log = $"  NEW-ERROR {asmName}: whole assembly failed only with new version ({newError})";
+		r.Transitions.Add($"NEW-ERROR (assembly) {asmName}: {newError}");
+		r.NewErrors++;
+		return r;
+	}
+	r.Counted = true;
+	foreach (var name in oldTypes.Keys.Union(newTypes.Keys).OrderBy(n => n))
+	{
+		var o = oldTypes.GetValueOrDefault(name);
+		var n = newTypes.GetValueOrDefault(name);
+		var location = $"{asmName} / {name}";
+		if (o == null || n == null)
+		{
+			r.Transitions.Add($"only-{(o != null ? "old" : "new")} {location}");
+			continue;
+		}
+		if (o.Error != null || n.Error != null)
+		{
+			if (o.Error != null && n.Error != null)
+			{
+				r.BothErrors++;
+				if (o.Error != n.Error)
+					r.Transitions.Add($"error-changed {location}: {o.Error} -> {n.Error}");
+			}
+			else if (o.Error != null)
+			{
+				r.FixedErrors++;
+				r.Transitions.Add($"fixed-error {location}: {o.Error}");
+			}
+			else
+			{
+				r.NewErrors++;
+				r.Transitions.Add($"NEW-ERROR {location}: {n.Error}");
+				DumpPair(dll, location, o.Code!, $"// ERROR: {n.Error}");
+			}
+			continue;
+		}
+		foreach (var method in o.MemberErrors.Keys.Union(n.MemberErrors.Keys).OrderBy(k => k))
+		{
+			var oldMemberError = o.MemberErrors.GetValueOrDefault(method);
+			var newMemberError = n.MemberErrors.GetValueOrDefault(method);
+			if (oldMemberError == null && newMemberError != null)
+			{
+				r.NewErrors++;
+				r.Transitions.Add($"NEW-ERROR (method) {location} / {method}: {newMemberError}");
+			}
+			else if (oldMemberError != null && newMemberError == null)
+			{
+				r.FixedErrors++;
+				r.Transitions.Add($"fixed-error (method) {location} / {method}: {oldMemberError}");
+			}
+			else if (oldMemberError != null && newMemberError != null)
+			{
+				r.BothErrors++;
+				if (oldMemberError != newMemberError)
+					r.Transitions.Add($"error-changed (method) {location} / {method}: {oldMemberError} -> {newMemberError}");
+			}
+		}
+		r.OldTotals += o.Metrics;
+		r.NewTotals += n.Metrics;
+		if (o.Code == n.Code)
+		{
+			r.Unchanged++;
+			continue;
+		}
+		r.Changed.Add(new ChangedType(location, o.Metrics, n.Metrics, DumpPair(dll, location, o.Code!, n.Code!)));
+	}
+	r.Log = $"  {asmName}: {oldTypes.Count} types, {r.Changed.Count} changed";
+	return r;
+}
+
+string DumpPair(string dll, string location, string oldCode, string newCode)
+{
+	var identity = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+		Encoding.UTF8.GetBytes(Path.GetFullPath(dll))))[..16];
+	var separator = location.IndexOf(" / ", StringComparison.Ordinal);
+	var reportLocation = $"{location[..separator]}-{identity}/{location[(separator + 3)..]}";
 	foreach (var (side, code) in new[] { ("old", oldCode), ("new", newCode) })
 	{
-		var path = Path.Combine(reportDir, side, Report.SanitizeFileName(location.Replace(" / ", "/")) + ".cs");
+		var path = Path.Combine(reportDir, side, Report.SanitizeFileName(reportLocation) + ".cs");
 		Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 		File.WriteAllText(path, code);
 	}
+	return Report.SanitizeFileName(reportLocation) + ".cs";
 }
 
 static string MetricRow(string name, long oldValue, long newValue)
@@ -334,7 +500,7 @@ static string MetricNotes(ChangedType c)
 // Locates reference assemblies by simple name and stages them next to the assembly
 // being decompiled. Sources, in order: the reference-assembly pack for the assembly's
 // own target framework, the --refs directories (indexed once), and the machine-wide
-// NuGet cache (probed per name, so nothing scans ~40k packages).
+// NuGet cache (probed per package name first, then indexed by contained assembly names).
 //
 // The pack has to be chosen per assembly and has to win: a net9.0 assembly resolved
 // against the .NET Framework packs finds mscorlib but not ValueTask or the async
@@ -344,7 +510,10 @@ static string MetricNotes(ChangedType c)
 // only exists behind a Windows path lookup.
 sealed class RefIndex
 {
+	// Guards the lazily filled indexes below; staging runs on several threads.
+	readonly object gate = new();
 	readonly Dictionary<string, string> byName = new(StringComparer.OrdinalIgnoreCase);
+	Dictionary<string, string>? byPackageAssemblyName;
 	readonly List<string> probeRoots = new();
 	readonly string nugetRoot;
 	// Reference assemblies are picked per corpus assembly, keyed by its TargetFrameworkAttribute:
@@ -378,13 +547,16 @@ sealed class RefIndex
 	public Dictionary<string, string> IndexFor(string? targetFramework)
 	{
 		var key = targetFramework ?? "";
-		if (byFramework.TryGetValue(key, out var index))
+		lock (gate)
+		{
+			if (byFramework.TryGetValue(key, out var index))
+				return index;
+			index = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+			foreach (var dir in RefPackDirs(key))
+				IndexDirectory(dir, index);
+			byFramework[key] = index;
 			return index;
-		index = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-		foreach (var dir in RefPackDirs(key))
-			IndexDirectory(dir, index);
-		byFramework[key] = index;
-		return index;
+		}
 	}
 
 	// Ref-pack directories for a TargetFrameworkAttribute value, most specific first.
@@ -404,10 +576,12 @@ sealed class RefIndex
 			}
 			yield break;
 		}
-		// .NETFramework and .NETStandard both resolve against the classic reference assemblies,
-		// but only a .NETFramework version selects a pack: a .NETStandard version is not a net4x
-		// version, and feeding 2.0 to the picker would pick net45, whose Facades carry no
-		// netstandard.dll. netstandard targets take the newest pack, with the widest facade set.
+		// Do not bind .NETStandard assemblies to a .NET Framework reference pack. The classic
+		// mscorlib/System assemblies change type signatures such as Span<T> and introduce
+		// metadata that is not present when the assembly is opened normally by the runtime.
+		// The resolver can use the runtime and package references instead.
+		if (targetFramework.StartsWith(".NETStandard", StringComparison.OrdinalIgnoreCase))
+			yield break;
 		var netFxVersion = targetFramework.StartsWith(".NETFramework", StringComparison.OrdinalIgnoreCase)
 			? version : null;
 		foreach (var dir in EnumerateFrameworkRefPacks(nugetRoot, netFxVersion))
@@ -497,6 +671,12 @@ sealed class RefIndex
 
 	public string? Find(string simpleName, Dictionary<string, string> frameworkIndex)
 	{
+		lock (gate)
+			return FindLocked(simpleName, frameworkIndex);
+	}
+
+	string? FindLocked(string simpleName, Dictionary<string, string> frameworkIndex)
+	{
 		// The target framework's own reference assemblies outrank everything else: a corpus
 		// neighbour or a stray NuGet copy of System.Runtime would otherwise decide the BCL.
 		if (frameworkIndex.TryGetValue(simpleName, out var fxHit))
@@ -521,8 +701,43 @@ sealed class RefIndex
 				return candidate;
 			}
 		}
+		if (PackageAssemblyIndex().TryGetValue(simpleName, out hit))
+		{
+			byName[simpleName] = hit;
+			return hit;
+		}
 		byName[simpleName] = null!;   // negative cache: probing the filesystem twice buys nothing
 		return null;
+	}
+
+	Dictionary<string, string> PackageAssemblyIndex()
+	{
+		if (byPackageAssemblyName != null)
+			return byPackageAssemblyName;
+		var index = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var root in probeRoots)
+		{
+			foreach (var packageDir in Directory.EnumerateDirectories(root))
+			{
+				foreach (var versionDir in Directory.EnumerateDirectories(packageDir)
+					.OrderByDescending(d => Path.GetFileName(d), StringComparer.OrdinalIgnoreCase))
+				{
+					foreach (var baseDirName in new[] { "lib", "ref" })
+					{
+						var baseDir = Path.Combine(versionDir, baseDirName);
+						if (!Directory.Exists(baseDir))
+							continue;
+						foreach (var dll in Directory.EnumerateFiles(baseDir, "*.dll", SearchOption.AllDirectories))
+						{
+							var name = Path.GetFileNameWithoutExtension(dll);
+							if (!index.ContainsKey(name))
+								index[name] = dll;
+						}
+					}
+				}
+			}
+		}
+		return byPackageAssemblyName = index;
 	}
 
 	// Builds the staging directory for one assembly and returns the path to decompile
@@ -539,6 +754,7 @@ sealed class RefIndex
 		Link(dll, dir);
 		var missing = new List<string>();
 		var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		bool isNetStandard = TargetFrameworkOf(dll)?.StartsWith(".NETStandard", StringComparison.OrdinalIgnoreCase) == true;
 		// The flag records whether a name was reached through a reference assembly, which
 		// decides whether its absence is worth reporting.
 		var queue = new Queue<(string Name, bool ViaRefPack)>();
@@ -547,6 +763,8 @@ sealed class RefIndex
 		while (queue.Count > 0)
 		{
 			var (name, viaRefPack) = queue.Dequeue();
+			if (isNetStandard && IsPlatformAssembly(name))
+				continue;
 			if (!seen.Add(name))
 				continue;
 			var staged = Path.Combine(dir, name + ".dll");
@@ -563,7 +781,10 @@ sealed class RefIndex
 						missing.Add(name);
 					continue;
 				}
-				Link(found, dir);
+				// Stage under the name the reference asks for, not the source file's name: the
+				// GAC stores SMDiagnostics as SMdiagnostics.dll, and on a case-sensitive
+				// filesystem the resolver would then miss the file sitting next to it.
+				Link(found, dir, name + Path.GetExtension(found));
 			}
 			// A staged reference brings its own references along: the type system follows
 			// base types and type-forwards across the whole closure, not just one hop.
@@ -575,18 +796,29 @@ sealed class RefIndex
 		return (Path.Combine(dir, Path.GetFileName(dll)), missing);
 	}
 
+	static bool IsPlatformAssembly(string name)
+	{
+		return name.Equals("mscorlib", StringComparison.OrdinalIgnoreCase)
+			|| name.Equals("netstandard", StringComparison.OrdinalIgnoreCase)
+			|| name.Equals("System", StringComparison.OrdinalIgnoreCase)
+			|| name.StartsWith("System.", StringComparison.OrdinalIgnoreCase)
+			|| name.Equals("Microsoft.CSharp", StringComparison.OrdinalIgnoreCase)
+			|| name.Equals("Microsoft.VisualBasic", StringComparison.OrdinalIgnoreCase)
+			|| name.StartsWith("Microsoft.Win32.", StringComparison.OrdinalIgnoreCase);
+	}
+
 	// Distinct per source path: two packages can ship the same assembly name with
 	// different contents, and they must not share a staging directory.
 	static string StageName(string dll)
 	{
 		var full = Path.GetFullPath(dll);
-		var hash = Convert.ToHexString(System.Security.Cryptography.MD5.HashData(Encoding.UTF8.GetBytes(full)))[..8];
+		var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(full)))[..16];
 		return $"{Path.GetFileNameWithoutExtension(full)}-{hash}";
 	}
 
-	static void Link(string source, string targetDir)
+	static void Link(string source, string targetDir, string? linkName = null)
 	{
-		var link = Path.Combine(targetDir, Path.GetFileName(source));
+		var link = Path.Combine(targetDir, linkName ?? Path.GetFileName(source));
 		if (File.Exists(link))
 			return;
 		try
@@ -595,6 +827,8 @@ sealed class RefIndex
 		}
 		catch (Exception e) when (e is IOException or UnauthorizedAccessException)
 		{
+			if (File.Exists(link))
+				return;
 			// Windows only hands out symlink privileges to elevated processes or with
 			// Developer Mode enabled; copying costs disk but keeps staging working.
 			File.Copy(source, link, overwrite: true);
@@ -677,7 +911,7 @@ static class Report
 			  :root { --bg:#16181c; --fg:#e6e6e6; --muted:#9aa0a6; --line:#333;
 			          --add:#12261a; --addfg:#7ee2a8; --del:#2b1416; --delfg:#ff9c92; --chip:#24262b; }
 			}
-			body { background:var(--bg); color:var(--fg); font:14px/1.5 system-ui,sans-serif; margin:0 auto; padding:24px; max-width:1100px; }
+			body { background:var(--bg); color:var(--fg); font:14px/1.5 system-ui,sans-serif; margin:0; padding:24px; }
 			h1 { font-size:20px; margin:0 0 4px; } h2 { font-size:16px; margin:28px 0 8px; }
 			.meta { color:var(--muted); font-size:13px; }
 			table { border-collapse:collapse; margin:12px 0; } th,td { border:1px solid var(--line); padding:4px 10px; text-align:right; }
@@ -685,7 +919,7 @@ static class Report
 			.pos { color:var(--delfg); } .neg { color:var(--addfg); }
 			details { border:1px solid var(--line); border-radius:6px; margin:6px 0; background:var(--chip); }
 			summary { cursor:pointer; padding:8px 10px; font-family:ui-monospace,monospace; font-size:13px; }
-			pre { margin:0; padding:10px; overflow-x:auto; background:var(--bg); font:12px/1.45 ui-monospace,monospace; }
+			pre { margin:0; padding:10px; overflow-x:auto; white-space:pre-wrap; overflow-wrap:anywhere; background:var(--bg); font:12px/1.45 ui-monospace,monospace; }
 			ins { background:var(--add); color:var(--addfg); text-decoration:none; display:block; }
 			del { background:var(--del); color:var(--delfg); text-decoration:none; display:block; }
 			span.ctx { display:block; color:var(--muted); }
@@ -714,7 +948,7 @@ static class Report
 			html.AppendLine("<input id=filter placeholder='filter by type or assembly name'>");
 			foreach (var c in m.Changed.OrderByDescending(c => Math.Abs(c.New.Lines - c.Old.Lines)))
 			{
-				var file = SanitizeFileName(c.Location.Replace(" / ", "/")) + ".cs";
+				var file = c.File;
 				var delta = c.New.Lines - c.Old.Lines;
 				html.AppendLine($"<details><summary>{Esc(c.Location)} "
 					+ $"<span class=meta>({c.Old.Lines} &rarr; {c.New.Lines} lines, {delta:+#;-#;0})</span></summary>");
@@ -826,17 +1060,40 @@ record ReportModel(
 	List<string> Transitions, List<string> Skipped, SortedDictionary<string, List<string>> UnresolvedRefs,
 	Metrics OldTotals, Metrics NewTotals, int NewErrors, int FixedErrors, int BothErrors, string ReportDir);
 
-record TypeResult(string? Code, string? Error, Metrics Metrics);
+record TypeResult(string? Code, string? Error, Metrics Metrics, Dictionary<string, string> MemberErrors);
 
-record ChangedType(string Location, Metrics Old, Metrics New);
+class AsmResult(string name)
+{
+	public string Name { get; } = name;
+	public string Log = "";
+	public List<string> Missing = new();
+	public string? Skipped;
+	public bool Counted;
+	public int Unchanged, NewErrors, FixedErrors, BothErrors;
+	public List<ChangedType> Changed = new();
+	public List<string> Transitions = new();
+	public Metrics OldTotals, NewTotals;
+}
+
+record ChangedType(string Location, Metrics Old, Metrics New, string File);
 
 record struct Metrics(int Lines, int Gotos, int IlWarnings, int GeneratedNames)
 {
+	// Names that the decompiler's own identifier rules reject: every character of an
+	// identifier must be a letter, digit or '_' (EscapeInvalidIdentifiers.IsValid), and the
+	// mangled ones start with '<' or contain '$' (SRMExtensions.IsGeneratedName). The input
+	// is output text rather than identifiers, so the shapes are matched lexically: a
+	// bracketed part followed by an identifier character ("<>c", "<P>k__BackingField",
+	// "<Main>$"), or a '$' between identifier characters ("VB$AnonymousType_0"). Real C#
+	// never puts an identifier character directly after a generic argument list's '>', so
+	// generic instantiations do not match.
+	const string GeneratedNamePattern = @"<[A-Za-z0-9_.,<> ]*>[A-Za-z0-9_$]|[A-Za-z0-9_]\$[A-Za-z0-9_$]";
+
 	public static Metrics Measure(string code) => new(
 		code.Count(c => c == '\n') + 1,
 		Regex.Matches(code, @"\bgoto ").Count,
 		Regex.Matches(code, @"//IL_[0-9a-fA-F]+:").Count,
-		Regex.Matches(code, @"<>").Count);
+		Regex.Matches(code, GeneratedNamePattern).Count);
 
 	public static Metrics operator +(Metrics a, Metrics b)
 		=> new(a.Lines + b.Lines, a.Gotos + b.Gotos, a.IlWarnings + b.IlWarnings, a.GeneratedNames + b.GeneratedNames);
@@ -849,7 +1106,6 @@ class Side
 {
 	readonly Assembly assembly;
 	public string Description { get; }
-	public string? LastAssemblyError { get; private set; }
 
 	Side(Assembly assembly, string description)
 	{
@@ -857,7 +1113,7 @@ class Side
 		Description = description;
 	}
 
-	public static Side Create(string name, string spec, bool skipBuild)
+	public static Side Create(string name, string spec, bool build)
 	{
 		string dllPath;
 		string description;
@@ -869,7 +1125,7 @@ class Side
 		else if (Directory.Exists(spec))
 		{
 			var checkout = Path.GetFullPath(spec);
-			dllPath = BuildCheckout(checkout, skipBuild);
+			dllPath = BuildCheckout(checkout, build);
 			// The dll timestamp is in the header so a --no-build run says what it measured.
 			description = $"{checkout} ({GitDescribe(checkout)}, dll of {File.GetLastWriteTime(dllPath):yyyy-MM-dd HH:mm})";
 		}
@@ -879,7 +1135,7 @@ class Side
 			// The worktree is keyed by commit and kept: reusing it reuses the Release build
 			// already sitting in its bin/, which is what dominates the runtime of a rerun.
 			var checkout = EnsureWorktree(repoRoot, commit);
-			dllPath = BuildCheckout(checkout, skipBuild);
+			dllPath = BuildCheckout(checkout, build);
 			description = $"{spec} ({commit[..9]}, dll of {File.GetLastWriteTime(dllPath):yyyy-MM-dd HH:mm})";
 		}
 		else
@@ -891,7 +1147,17 @@ class Side
 		return new Side(alc.LoadFromAssemblyPath(dllPath), description);
 	}
 
-	static string BuildCheckout(string checkout, bool skipBuild)
+	public static string GetMergeBase(string newSpec)
+	{
+		if (!TryResolveCommit(newSpec, out var commit, out var repoRoot))
+			throw new ArgumentException($"--old can be omitted only when --new is a commit-ish in the repository at {Environment.CurrentDirectory}");
+		var mergeBase = Git(repoRoot, "merge-base", "origin/master", commit);
+		if (string.IsNullOrEmpty(mergeBase))
+			throw new ArgumentException($"Could not find the merge-base of origin/master and --new {newSpec}; fetch origin/master first");
+		return mergeBase;
+	}
+
+	static string BuildCheckout(string checkout, bool build)
 	{
 		var csproj = Path.Combine(checkout, "ICSharpCode.Decompiler", "ICSharpCode.Decompiler.csproj");
 		if (!File.Exists(csproj))
@@ -901,7 +1167,7 @@ class Side
 			? Directory.EnumerateFiles(binDir, "ICSharpCode.Decompiler.dll", SearchOption.AllDirectories)
 				.OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault()
 			: null;
-		if (existing != null && skipBuild)
+		if (existing != null && !build)
 		{
 			Console.Error.WriteLine($"  warning: --no-build, reusing {existing}");
 			Console.Error.WriteLine($"  warning: built {File.GetLastWriteTime(existing):yyyy-MM-dd HH:mm} - if that predates the checkout's"
@@ -915,7 +1181,7 @@ class Side
 			.OrderByDescending(File.GetLastWriteTimeUtc).First();
 	}
 
-	static void Run(string exe, string arguments)
+	internal static void Run(string exe, string arguments)
 	{
 		Console.WriteLine($"  $ {exe} {arguments}");
 		var psi = new ProcessStartInfo(exe, arguments) {
@@ -992,10 +1258,9 @@ class Side
 	}
 
 	// Decompiles every top-level type; null when the assembly itself cannot be
-	// opened (not managed, type system init failed) - see LastAssemblyError.
-	public Dictionary<string, TypeResult>? DecompileAssembly(string dllPath)
+	// opened (not managed, type system init failed), with the reason in Error.
+	public (Dictionary<string, TypeResult>? Types, string? Error) DecompileAssembly(string dllPath)
 	{
-		LastAssemblyError = null;
 		dynamic decompiler;
 		try
 		{
@@ -1006,8 +1271,7 @@ class Side
 		}
 		catch (Exception ex)
 		{
-			LastAssemblyError = Unwrap(ex).Message;
-			return null;
+			return (null, Unwrap(ex).Message);
 		}
 		var results = new Dictionary<string, TypeResult>();
 		foreach (object type in (IEnumerable)decompiler.TypeSystem.MainModule.TopLevelTypeDefinitions)
@@ -1021,7 +1285,7 @@ class Side
 			{
 				decompiler.CancellationToken = cts.Token;
 				string code = decompiler.DecompileTypeAsString((dynamic)fullTypeName);
-				results[name] = new TypeResult(code, null, Metrics.Measure(code));
+				results[name] = new TypeResult(code, null, Metrics.Measure(code), GetMemberErrors(decompiler));
 			}
 			catch (Exception ex)
 			{
@@ -1029,10 +1293,21 @@ class Side
 				var error = inner is OperationCanceledException
 					? "timeout (60s)"
 					: $"{inner.GetType().Name}: {FirstLine(inner.Message)}";
-				results[name] = new TypeResult(null, error, default);
+				results[name] = new TypeResult(null, error, default, new Dictionary<string, string>());
 			}
 		}
-		return results;
+		return (results, null);
+	}
+
+	static Dictionary<string, string> GetMemberErrors(object decompiler)
+	{
+		var errors = new Dictionary<string, string>();
+		foreach (object error in (IEnumerable)GetProperty(decompiler, "Errors"))
+		{
+			var message = GetProperty(error, "Message").ToString()!;
+			errors[message] = error.ToString()!;
+		}
+		return errors;
 	}
 
 	static object GetProperty(object obj, string name)

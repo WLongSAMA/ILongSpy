@@ -160,7 +160,7 @@ A few things that are easy to get wrong when editing the generator or the nodes 
 
 - **Build the way the repo expects.** Use the root pwsh scripts, and the OpenSSL env var is required:
   `OPENSSL_ENABLE_SHA1_SIGNATURES=1 pwsh ./build.ps1 -Configuration Debug --no-restore`. A bare
-  `dotnet build` prunes the lock files (see the root `CLAUDE.md`).
+  `dotnet build` prunes the lock files (see the root `AGENTS.md`).
 - **The generator is a cached analyzer assembly.** Editing a **node** file re-runs the generator (node
   files are its input). Editing **the generator's own source** may *not* re-run it on an incremental
   build -- the consuming project keeps using the cached analyzer. Force a fresh run by clearing the
@@ -171,7 +171,7 @@ A few things that are easy to get wrong when editing the generator or the nodes 
   reference the expected symbol (e.g. `Slots.Foo`) in code and let the build fail or pass.
 - **Validate with the DEBUG test run.** `CheckInvariant` is `[Conditional("DEBUG")]` and the test host
   runs DEBUG, so after any AST or transform change run the Pretty suite in DEBUG:
-  `OPENSSL_ENABLE_SHA1_SIGNATURES=1 dotnet test --solution ILSpy.sln --report-trx --no-build -c Debug
+  `OPENSSL_ENABLE_SHA1_SIGNATURES=1 dotnet test --solution ILSpy.slnx --report-trx --no-build -c Debug
   --filter "FullyQualifiedName~PrettyTestRunner"`. It checks the output is byte-identical **and**
   exercises `CheckInvariant` across every node shape -- a green run is the real signal, not a green
   build.

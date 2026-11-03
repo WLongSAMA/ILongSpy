@@ -537,55 +537,7 @@ namespace ICSharpCode.Decompiler.TypeSystem
 				string name = metadata.GetString(memberRef.Name);
 				signature = memberRef.DecodeMethodSignature(TypeProvider,
 					new GenericContext(declaringTypeDefinition?.TypeParameters));
-				if (declaringTypeDefinition != null)
-				{
-					// Find the set of overloads to search:
-					IEnumerable<IMethod> methods;
-					if (name == ".ctor")
-					{
-						methods = declaringTypeDefinition.GetConstructors();
-					}
-					else if (name == ".cctor")
-					{
-						methods = declaringTypeDefinition.Methods.Where(m => m.IsConstructor && m.IsStatic);
-					}
-					else
-					{
-						methods = declaringTypeDefinition.GetMethods(m => m.Name == name, GetMemberOptions.IgnoreInheritedMembers)
-							.Concat(declaringTypeDefinition.GetAccessors(m => m.Name == name, GetMemberOptions.IgnoreInheritedMembers));
-					}
-					// Determine the expected parameters from the signature:
-					ImmutableArray<IType> parameterTypes;
-					if (signature.Header.CallingConvention == SignatureCallingConvention.VarArgs)
-					{
-						parameterTypes = signature.ParameterTypes
-							.Take(signature.RequiredParameterCount)
-							.Concat(new[] { SpecialType.ArgList })
-							.ToImmutableArray();
-					}
-					else
-					{
-						parameterTypes = signature.ParameterTypes;
-					}
-					// Search for the matching method:
-					method = null;
-					foreach (var m in methods)
-					{
-						if (m.TypeParameters.Count != signature.GenericParameterCount)
-							continue;
-						if (signature.Header.IsInstance != !m.IsStatic)
-							continue;
-						if (CompareSignatures(m.Parameters, parameterTypes) && CompareTypes(m.ReturnType, signature.ReturnType))
-						{
-							method = m;
-							break;
-						}
-					}
-				}
-				else
-				{
-					method = null;
-				}
+				method = declaringTypeDefinition != null ? FindMethod(declaringTypeDefinition, name, signature) : null;
 				if (method == null)
 				{
 					method = CreateFakeMethod(declaringType, name, signature);
@@ -600,6 +552,81 @@ namespace ICSharpCode.Decompiler.TypeSystem
 				method = new VarArgInstanceMethod(method, signature.ParameterTypes.Skip(signature.RequiredParameterCount));
 			}
 			return method;
+		}
+
+		/// <summary>
+		/// Resolves a method on <paramref name="declaringType"/> by name and signature.
+		/// If the type declares no such method - because the reference is missing, or the
+		/// method does not exist on the version at hand - a fake method carrying the requested
+		/// signature is returned, as for a method reference that cannot be resolved.
+		/// </summary>
+		/// <remarks>
+		/// The signature is matched against the members of <paramref name="declaringType"/> as
+		/// they are seen from the outside, so for a parameterized type it is written in terms of
+		/// the type arguments, not the type parameters. This is the lookup a decompiler step
+		/// needs when it has to name a specific method - a conversion operator, say - rather
+		/// than one it read from metadata.
+		/// </remarks>
+		public IMethod ResolveMethod(IType declaringType, string name, MethodSignature<IType> signature)
+		{
+			if (declaringType == null)
+				throw new ArgumentNullException(nameof(declaringType));
+			if (name == null)
+				throw new ArgumentNullException(nameof(name));
+			return FindMethod(declaringType, name, signature)
+				?? CreateFakeMethod(declaringType, name, signature);
+		}
+
+		/// <summary>
+		/// The single method on <paramref name="declaringType"/> that matches the name and the
+		/// signature, or null. Only the methods the type itself declares are candidates, because
+		/// a signature always names the type that declares the method.
+		/// </summary>
+		static IMethod FindMethod(IType declaringType, string name, MethodSignature<IType> signature)
+		{
+			// Find the set of overloads to search:
+			IEnumerable<IMethod> candidates;
+			if (name == ".ctor")
+			{
+				candidates = declaringType.GetConstructors();
+			}
+			else if (name == ".cctor")
+			{
+				// GetConstructors() only returns instance constructors.
+				candidates = declaringType.GetDefinition()?.Methods.Where(m => m.IsConstructor && m.IsStatic) ?? [];
+			}
+			else
+			{
+				candidates = declaringType.GetMethods(m => m.Name == name, GetMemberOptions.IgnoreInheritedMembers)
+					.Concat(declaringType.GetAccessors(m => m.Name == name, GetMemberOptions.IgnoreInheritedMembers));
+			}
+			// Determine the expected parameters from the signature: a vararg signature is matched
+			// against its required parameters plus __arglist.
+			ImmutableArray<IType> parameterTypes;
+			if (signature.Header.CallingConvention == SignatureCallingConvention.VarArgs)
+			{
+				parameterTypes = signature.ParameterTypes
+					.Take(signature.RequiredParameterCount)
+					.Concat(new[] { SpecialType.ArgList })
+					.ToImmutableArray();
+			}
+			else
+			{
+				parameterTypes = signature.ParameterTypes;
+			}
+			// Search for the matching method:
+			foreach (var method in candidates)
+			{
+				if (method.TypeParameters.Count != signature.GenericParameterCount)
+					continue;
+				if (signature.Header.IsInstance != !method.IsStatic)
+					continue;
+				if (CompareSignatures(method.Parameters, parameterTypes) && CompareTypes(method.ReturnType, signature.ReturnType))
+				{
+					return method;
+				}
+			}
+			return null;
 		}
 
 		static readonly NormalizeTypeVisitor normalizeTypeVisitor = new NormalizeTypeVisitor {
@@ -634,12 +661,11 @@ namespace ICSharpCode.Decompiler.TypeSystem
 			SymbolKind symbolKind = SymbolKind.Method;
 			if (name == ".ctor" || name == ".cctor")
 				symbolKind = SymbolKind.Constructor;
-			var m = new FakeMethod(Compilation, symbolKind);
-			m.DeclaringType = declaringType;
-			m.Name = name;
-			m.ReturnType = signature.ReturnType;
-			m.IsStatic = !signature.Header.IsInstance;
-
+			var m = new FakeMethod(Compilation, symbolKind) {
+				DeclaringType = declaringType,
+				Name = name,
+				IsStatic = !signature.Header.IsInstance
+			};
 			TypeParameterSubstitution substitution = null;
 			if (signature.GenericParameterCount > 0)
 			{
@@ -655,28 +681,40 @@ namespace ICSharpCode.Decompiler.TypeSystem
 			{
 				substitution = declaringType.GetSubstitution();
 			}
+
+			m.ReturnType = ApplyAttributesAndSubstitutionToType(signature.ReturnType, substitution);
+
 			var parameters = new List<IParameter>();
 			for (int i = 0; i < signature.RequiredParameterCount; i++)
 			{
-				var type = signature.ParameterTypes[i];
-				if (substitution != null)
-				{
-					// replace the dummy method type parameters with the owned instances we just created
-					type = type.AcceptVisitor(substitution);
-				}
+				var type = ApplyAttributesAndSubstitutionToType(signature.ParameterTypes[i], substitution);
 				parameters.Add(new DefaultParameter(type, ""));
 			}
 			m.Parameters = parameters;
 
-			GuessFakeMethodAccessor(declaringType, name, signature, m, parameters);
+			GuessFakeMethodAccessor(declaringType, m);
 
 			return m;
 		}
 
-		private void GuessFakeMethodAccessor(IType declaringType, string name, MethodSignature<IType> signature, FakeMethod m, List<IParameter> parameters)
+		private IType ApplyAttributesAndSubstitutionToType(IType type, TypeParameterSubstitution substitution = null)
 		{
-			if (signature.GenericParameterCount > 0)
+			type = ApplyAttributeTypeVisitor.ApplyAttributesToType(type, Compilation, null, metadata, options, Nullability.Oblivious);
+			if (substitution != null)
+			{
+				// replace the dummy method type parameters with the owned instances we just created
+				type = type.AcceptVisitor(substitution);
+			}
+			return type;
+		}
+
+		private void GuessFakeMethodAccessor(IType declaringType, FakeMethod m)
+		{
+			if (m.TypeParameters.Count > 0)
 				return;
+
+			string name = m.Name;
+			var parameters = m.Parameters;
 
 			var guessedGetter = name.StartsWith("get_", StringComparison.Ordinal);
 			var guessedSetter = name.StartsWith("set_", StringComparison.Ordinal);
@@ -692,13 +730,13 @@ namespace ICSharpCode.Decompiler.TypeSystem
 
 				if (guessedGetter)
 				{
-					if (signature.ReturnType.Kind == TypeKind.Void)
+					if (m.ReturnType.Kind == TypeKind.Void)
 						return;
 
 					m.AccessorKind = MethodSemanticsAttributes.Getter;
 					m.AccessorOwner = fakeProperty;
 					fakeProperty.Getter = m;
-					fakeProperty.ReturnType = signature.ReturnType;
+					fakeProperty.ReturnType = m.ReturnType;
 					fakeProperty.IsIndexer = parameters.Count > 0;
 					fakeProperty.Parameters = parameters;
 					return;
@@ -706,7 +744,7 @@ namespace ICSharpCode.Decompiler.TypeSystem
 
 				if (guessedSetter)
 				{
-					if (parameters.Count < 1 || signature.ReturnType.Kind != TypeKind.Void)
+					if (parameters.Count < 1 || m.ReturnType.Kind != TypeKind.Void)
 						return;
 
 					m.AccessorKind = MethodSemanticsAttributes.Setter;
@@ -839,13 +877,8 @@ namespace ICSharpCode.Decompiler.TypeSystem
 				GetMemberOptions.IgnoreInheritedMembers).FirstOrDefault();
 			if (field == null)
 			{
-				// If it's a field in a generic type, we need to substitute the type arguments:
-				if (declaringType.TypeArguments.Count > 0)
-				{
-					signature = signature.AcceptVisitor(declaringType.GetSubstitution());
-				}
 				field = new FakeField(Compilation) {
-					ReturnType = signature,
+					ReturnType = ApplyAttributesAndSubstitutionToType(signature, declaringType.GetSubstitution()),
 					Name = name,
 					DeclaringType = declaringType,
 				};

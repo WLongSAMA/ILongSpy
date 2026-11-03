@@ -515,7 +515,7 @@ namespace ModreqParams
 			roslynCompilation = CSharpCompilation.Create(
 				"IdStringTestAssembly",
 				new[] { syntaxTree },
-				Tester.CoreDefaultReferences.Select(r => MetadataReference.CreateFromFile(Path.Combine(Tester.RefAssembliesToolset.GetPath(Tester.CurrentNetCoreAppVersion), r))),
+				Tester.CoreDefaultReferences.Select(r => MetadataReference.CreateFromFile(Path.Combine(Tester.RefAssembliesToolset.GetPath(CurrentNetCoreVersion.AppVersion), r))),
 				new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true));
 
 			// Verify the compilation has no errors (warnings are OK)
@@ -553,9 +553,7 @@ namespace ModreqParams
 			roslynIdMap = null;
 			if (tempDllPath != null && File.Exists(tempDllPath))
 			{
-				try
-				{ File.Delete(tempDllPath); }
-				catch { /* best effort cleanup */ }
+				Tester.RepeatOnIOError(() => File.Delete(tempDllPath));
 			}
 		}
 

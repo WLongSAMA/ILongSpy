@@ -199,6 +199,12 @@ namespace ICSharpCode.ILSpy.Docking
 			if (layout is IRootDock { Id: { Length: > 0 } rootId } root)
 				DockableLocator[rootId] = () => root;
 
+			// Dock's theme template binds against DockCapabilityOverrides.{CanDrag, CanDrop} on
+			// every dockable, the docks included. A layout restored from disk carries none, so
+			// fill them in here, where both fresh and restored layouts pass through.
+			foreach (var dockable in Flatten(layout))
+				dockable.DockCapabilityOverrides ??= new DockCapabilityOverrides();
+
 			base.InitLayout(layout);
 		}
 
@@ -244,7 +250,8 @@ namespace ICSharpCode.ILSpy.Docking
 			try
 			{
 				using var stream = File.OpenRead(path);
-				loaded = System.Text.Json.JsonSerializer.Deserialize<IRootDock>(stream, ILSpyDockJson.Options);
+				using (AppEnv.AppLog.Phase("LoadLayout: deserialize"))
+					loaded = System.Text.Json.JsonSerializer.Deserialize<IRootDock>(stream, ILSpyDockJson.Options);
 			}
 			catch (Exception ex)
 			{
@@ -252,7 +259,10 @@ namespace ICSharpCode.ILSpy.Docking
 				return null;
 			}
 			if (loaded != null)
-				RehydrateFromLoadedLayout(loaded);
+			{
+				using (AppEnv.AppLog.Phase("LoadLayout: rehydrate"))
+					RehydrateFromLoadedLayout(loaded);
+			}
 			return loaded;
 		}
 
@@ -461,6 +471,21 @@ namespace ICSharpCode.ILSpy.Docking
 			};
 
 		/// <summary>
+		/// Activates <paramref name="dockable"/> within its owner, unless it is already the owner's
+		/// active dockable. Dock's <c>ActiveDockable</c> setter re-runs <c>InitActiveDockable</c>, which
+		/// ends in <see cref="SetFocusedDockable"/>, even for an unchanged value, so an unguarded
+		/// re-activation would move the active-pane highlight to the dockable's dock. Callers that
+		/// do want the focus to move pair this with <see cref="SetFocusedDockable"/> (see
+		/// <see cref="ActivateAndFocus"/>).
+		/// </summary>
+		public override void SetActiveDockable(IDockable dockable)
+		{
+			if (dockable.Owner is IDock { ActiveDockable: var active } && ReferenceEquals(active, dockable))
+				return;
+			base.SetActiveDockable(dockable);
+		}
+
+		/// <summary>
 		/// Makes <paramref name="dockable"/> both the active and the focused dockable within
 		/// <paramref name="owner"/>. The two always go together -- surfacing a dockable without
 		/// focusing it (or vice versa) is a half-done activation -- so they're paired here and
@@ -496,8 +521,24 @@ namespace ICSharpCode.ILSpy.Docking
 			var dock = FindOrCreateToolDock(entry.Metadata.Alignment);
 			if (dock is null)
 				return pane;
+			// A hidden pane is parked in the root's HiddenDockables, either by HideDockable or by a
+			// loaded layout. AddDockable below re-parents it into the tool dock but leaves that entry
+			// in place -- only Dock's RestoreDockable clears it, and that needs an OriginalOwner a
+			// loaded layout no longer carries. Clear it here, or every hide/show cycle appends
+			// another copy that the layout file then persists and reloads.
+			bool wasHidden = false;
+			if (GetRootDock() is IRootDock { HiddenDockables: { } hiddenDockables })
+			{
+				while (hiddenDockables.Remove(pane))
+				{
+					// Layout files written before this guard can hold the same pane several times.
+					wasHidden = true;
+				}
+			}
 			AddDockable(dock, pane);
 			ActivateAndFocus(dock, pane);
+			if (wasHidden)
+				OnDockableRestored(pane);
 			return pane;
 		}
 
@@ -527,6 +568,7 @@ namespace ICSharpCode.ILSpy.Docking
 				Alignment = dockAlignment,
 				VisibleDockables = CreateList(System.Array.Empty<IDockable>()),
 				DockCapabilityPolicy = new DockCapabilityPolicy(),
+				DockCapabilityOverrides = new DockCapabilityOverrides(),
 			};
 
 			switch (alignment)

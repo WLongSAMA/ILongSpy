@@ -85,20 +85,16 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 		UseDebug = 0x1,
 		Force32Bit = 0x2,
 		Library = 0x4,
-		/// Testing our own disassembler, or working around a bug in ildasm.
+		// Testing our own disassembler, or working around a bug in ildasm.
 		UseOwnDisassembler = 0x8,
-		/// Work around bug in .NET 5 ilasm (https://github.com/dotnet/runtime/issues/32400)
+		// Work around bug in .NET 5 ilasm (https://github.com/dotnet/runtime/issues/32400)
 		UseLegacyAssembler = 0x10,
-		/// UseSortByNameFilter, implies UseOwnDisassembler
+		// UseSortByNameFilter, implies UseOwnDisassembler
 		SortedOutput = 0x20,
 	}
 
 	public static partial class Tester
 	{
-		public const string CurrentNetCoreVersion = "11.0";
-		public const string CurrentNetCoreAppVersion = ".NETCoreApp,Version=v11.0";
-		public const string CurrentNetCoreRefAsmVersion = "11.0.0-preview.5.26302.115";
-
 		public static readonly string TesterPath;
 		public static readonly string TestCasePath;
 
@@ -123,9 +119,9 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 			TesterPath = Path.GetDirectoryName(typeof(Tester).Assembly.Location);
 			TestCasePath = Path.Combine(TesterPath, "../../../../TestCases");
 #if DEBUG
-			testRunnerBasePath = Path.Combine(TesterPath, $"../../../../../ICSharpCode.Decompiler.TestRunner/bin/Debug/net{CurrentNetCoreVersion}");
+			testRunnerBasePath = Path.Combine(TesterPath, $"../../../../../ICSharpCode.Decompiler.TestRunner/bin/Debug/net{CurrentNetCoreVersion.Version}");
 #else
-			testRunnerBasePath = Path.Combine(TesterPath, $"../../../../../ICSharpCode.Decompiler.TestRunner/bin/Release/net{CurrentNetCoreVersion}");
+			testRunnerBasePath = Path.Combine(TesterPath, $"../../../../../ICSharpCode.Decompiler.TestRunner/bin/Release/net{CurrentNetCoreVersion.Version}");
 #endif
 			// To parse: <Project><ItemGroup><PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.8.0-3.final" />
 			packagesPropsFile = Path.Combine(TesterPath, "../../../../../Directory.Packages.props");
@@ -165,7 +161,7 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 			await vswhereToolset.Fetch().ConfigureAwait(false);
 			await RefAssembliesToolset.Fetch("5.0.0", sourcePath: "ref/net5.0").ConfigureAwait(false);
 			await RefAssembliesToolset.Fetch("9.0.0", sourcePath: "ref/net9.0").ConfigureAwait(false);
-			await RefAssembliesToolset.Fetch(CurrentNetCoreRefAsmVersion, sourcePath: $"ref/net{CurrentNetCoreVersion}").ConfigureAwait(false);
+			await RefAssembliesToolset.Fetch(CurrentNetCoreVersion.RefAsmVersion, sourcePath: $"ref/net{CurrentNetCoreVersion.Version}").ConfigureAwait(false);
 
 #if DEBUG
 			const string testRunnerConfig = "Debug";
@@ -272,10 +268,14 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 			return Cli.Wrap(compilerPath).WithArguments(arguments);
 		}
 
+		// NuGetAudit is switched off for this build: the implicit restore would otherwise
+		// query every configured feed for vulnerability data, and under the repo's
+		// warnings-as-errors an unreachable feed fails the build (NU1900). The runner is a
+		// test host whose packages are audited by the regular solution restore already.
 		static async Task BuildTestRunner(string runtime, string config)
 		{
 			await Cli.Wrap("dotnet")
-				.WithArguments(new[] { "build", Path.Combine(TesterPath, "../../../../../ICSharpCode.Decompiler.TestRunner/ICSharpCode.Decompiler.TestRunner.csproj"), "-r", runtime, "-c", config, "--self-contained" })
+				.WithArguments(new[] { "build", Path.Combine(TesterPath, "../../../../../ICSharpCode.Decompiler.TestRunner/ICSharpCode.Decompiler.TestRunner.csproj"), "-r", runtime, "-c", config, "--self-contained", "-p:NuGetAudit=false" })
 				.ExecuteAsync();
 		}
 
@@ -472,7 +472,7 @@ namespace ICSharpCode.Decompiler.Tests.Helpers
 		public static IReadOnlyList<string> CoreDefaultReferences => coreDefaultReferences;
 
 		static readonly Dictionary<string, Lazy<string>> targetFrameworkAttributeSnippetFiles = new() {
-			{ CurrentNetCoreAppVersion, new Lazy<string>(() => GetTargetFrameworkAttributeSnippetFile(CurrentNetCoreAppVersion)) },
+			{ CurrentNetCoreVersion.AppVersion, new Lazy<string>(() => GetTargetFrameworkAttributeSnippetFile(CurrentNetCoreVersion.AppVersion)) },
 			{ ".NETCoreApp,Version=v9.0", new Lazy<string>(() => GetTargetFrameworkAttributeSnippetFile(".NETCoreApp,Version=v9.0")) },
 			{ ".NETCoreApp,Version=v5.0", new Lazy<string>(() => GetTargetFrameworkAttributeSnippetFile(".NETCoreApp,Version=v5.0")) },
 			{ ".NETCoreApp,Version=v2.2", new Lazy<string>(() => GetTargetFrameworkAttributeSnippetFile(".NETCoreApp,Version=v2.2")) },
@@ -670,7 +670,7 @@ namespace System.Runtime.CompilerServices
 					CompilerOptions.UseRoslyn2_10_0 => ("2.10.0", "latest", targetNet40 ? null : ".NETCoreApp,Version=v2.2"),
 					CompilerOptions.UseRoslyn3_11_0 => ("3.11.0", "latest", targetNet40 ? null : ".NETCoreApp,Version=v5.0"),
 					CompilerOptions.UseRoslyn4_14_0 => ("4.14.0", "latest", targetNet40 ? null : ".NETCoreApp,Version=v9.0"),
-					_ => (roslynLatestVersion, flags.HasFlag(CompilerOptions.Preview) ? "preview" : "latest", targetNet40 ? null : CurrentNetCoreAppVersion)
+					_ => (roslynLatestVersion, flags.HasFlag(CompilerOptions.Preview) ? "preview" : "latest", targetNet40 ? null : CurrentNetCoreVersion.AppVersion)
 				};
 
 				var cscPath = roslynToolset.GetCSharpCompiler(roslynVersion);
@@ -932,7 +932,8 @@ namespace System.Runtime.CompilerServices
 			}
 		}
 
-		public static void CompileCSharpWithPdb(string assemblyName, Dictionary<string, string> sourceFiles, CompilerOptions compilerOptions = CompilerOptions.None)
+		public static void CompileCSharpWithPdb(string assemblyName, Dictionary<string, string> sourceFiles,
+			CompilerOptions compilerOptions = CompilerOptions.None)
 		{
 			var parseOptions = new CSharpParseOptions(languageVersion: Microsoft.CodeAnalysis.CSharp.LanguageVersion.Latest);
 			if (compilerOptions.HasFlag(CompilerOptions.EnableRuntimeAsync))
@@ -953,9 +954,11 @@ namespace System.Runtime.CompilerServices
 			}
 
 			var compilation = CSharpCompilation.Create(Path.GetFileNameWithoutExtension(assemblyName),
-				syntaxTrees, coreDefaultReferences.Select(r => MetadataReference.CreateFromFile(Path.Combine(RefAssembliesToolset.GetPath(CurrentNetCoreAppVersion), r))),
+				syntaxTrees, coreDefaultReferences.Select(r => MetadataReference.CreateFromFile(Path.Combine(RefAssembliesToolset.GetPath(CurrentNetCoreVersion.AppVersion), r))),
 				new CSharpCompilationOptions(
-					OutputKind.DynamicallyLinkedLibrary,
+					compilerOptions.HasFlag(CompilerOptions.Library)
+						? OutputKind.DynamicallyLinkedLibrary
+						: OutputKind.ConsoleApplication,
 					platform: Platform.AnyCpu,
 					optimizationLevel: OptimizationLevel.Release,
 					allowUnsafe: true,
@@ -1162,26 +1165,37 @@ namespace System.Runtime.CompilerServices
 			}
 		}
 
-		internal static void RepeatOnIOError(Action action, int numTries = 5)
+		/// <summary>
+		/// Retries an IO operation that a virus scanner, the indexer or a compiler that has only
+		/// just exited can still hold a handle on, backing off between attempts. Every caller is
+		/// deleting a temp file, so a failure is reported and swallowed: the file is left behind,
+		/// which costs nothing, where throwing out of a fixture teardown reports an error for a
+		/// run that otherwise passed.
+		/// </summary>
+		internal static void RepeatOnIOError(Action action, int numTries = 8)
 		{
-			for (int i = 0; i < numTries - 1; i++)
+			Exception lastError = null;
+			int delay = 10;
+			for (int i = 0; i < numTries; i++)
 			{
 				try
 				{
 					action();
 					return;
 				}
-				catch (IOException)
+				catch (IOException ex)
 				{
+					lastError = ex;
 				}
-				catch (UnauthorizedAccessException)
+				catch (UnauthorizedAccessException ex)
 				{
 					// potential virus scanner problem
+					lastError = ex;
 				}
-				Thread.Sleep(10);
+				Thread.Sleep(delay);
+				delay = Math.Min(delay * 2, 500);
 			}
-			// If the last try still fails, don't catch the exception
-			action();
+			TestContext.Out.WriteLine($"Cleanup could not delete a temp file after {numTries} tries, leaving it behind: {lastError?.Message}");
 		}
 
 		public static async Task SignAssembly(string assemblyPath, string keyFilePath)

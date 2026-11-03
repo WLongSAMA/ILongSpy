@@ -385,7 +385,7 @@ namespace ICSharpCode.Decompiler.CSharp
 			{
 				if (currentIsIterator)
 					return new YieldBreakStatement().WithILInstruction(inst);
-				else if (!inst.Value.MatchNop())
+				if (!inst.Value.MatchNop())
 				{
 					bool isLambdaOrExprTree = currentFunction.Kind is ILFunctionKind.ExpressionTree or ILFunctionKind.Delegate;
 					var expr = exprBuilder.Translate(inst.Value, typeHint: currentResultType)
@@ -413,7 +413,17 @@ namespace ICSharpCode.Decompiler.CSharp
 					}
 				}
 				else
+				{
 					return new ReturnStatement().WithILInstruction(inst);
+				}
+			}
+			if (continueTarget != null
+				&& inst.TargetContainer.Parent is TryInstruction tryInstruction
+				&& tryInstruction.Parent is Block block
+				&& block.Instructions.LastOrDefault() is Branch branch
+				&& branch.TargetBlock == continueTarget)
+			{
+				return new ContinueStatement().WithILInstruction(inst);
 			}
 			if (!endContainerLabels.TryGetValue(inst.TargetContainer, out string? label))
 			{
@@ -633,7 +643,9 @@ namespace ICSharpCode.Decompiler.CSharp
 				m = getEnumeratorPattern.Match(resource);
 				if (!m.Success)
 				{
-					// ... or the extension GetEnumeratorPattern.
+					// ... or the extension GetEnumeratorPattern. CallBuilder writes the call this
+					// way when extension method syntax would not resolve back to the method, e.g.
+					// where two imported namespaces both offer a GetEnumerator extension.
 					m = extensionGetEnumeratorPattern.Match(resource);
 					if (!m.Success)
 						return false;
@@ -650,6 +662,10 @@ namespace ICSharpCode.Decompiler.CSharp
 				// Check if the resource expression matches the GetEnumerator pattern.
 				m = getEnumeratorPattern.Match(resource);
 				if (!m.Success)
+					return false;
+				// An extension GetEnumerator written in extension method syntax is spelled like an
+				// instance call, so the pattern alone no longer tells them apart.
+				if (resource.GetSymbol() is IMethod { IsExtensionMethod: true })
 					return false;
 			}
 			isAsync = ((MemberReferenceExpression)((InvocationExpression)resource).Target).MemberName == "GetAsyncEnumerator";
@@ -1483,7 +1499,7 @@ namespace ICSharpCode.Decompiler.CSharp
 
 		void DeclareLocalFunctions(ILFunction currentFunction, BlockContainer container, BlockStatement blockStatement)
 		{
-			foreach (var localFunction in currentFunction.LocalFunctions.OrderBy(f => f.Name))
+			foreach (var localFunction in currentFunction.LocalFunctions.OrderBy(f => f.Name, StringComparer.Ordinal))
 			{
 				if (localFunction.DeclarationScope != container)
 					continue;

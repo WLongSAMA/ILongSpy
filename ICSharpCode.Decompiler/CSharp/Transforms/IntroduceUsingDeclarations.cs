@@ -33,6 +33,7 @@ using ICSharpCode.Decompiler.IL;
 using ICSharpCode.Decompiler.Semantics;
 using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.Decompiler.TypeSystem.Implementation;
+using ICSharpCode.Decompiler.Util;
 
 namespace ICSharpCode.Decompiler.CSharp.Transforms
 {
@@ -61,7 +62,7 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 					.ThenByDescending(n => n);
 				foreach (string ns in sortedImports)
 				{
-					Debug.Assert(context.RequiredNamespacesSuperset.Contains(ns), $"Should not insert using declaration for namespace that is missing from the superset: {ns}");
+					DecompilerAssert.That(context.RequiredNamespacesSuperset.Contains(ns), $"Should not insert using declaration for namespace that is missing from the superset: {ns}");
 					// we go backwards (OrderByDescending) through the list of namespaces because we insert them backwards
 					// (always inserting at the start of the list)
 					string[] parts = ns.Split('.');
@@ -144,6 +145,20 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				}
 				base.VisitNamespaceDeclaration(namespaceDeclaration);
 				currentNamespace = oldNamespace;
+			}
+
+			public override void VisitInvocationExpression(InvocationExpression invocationExpression)
+			{
+				// A call written in extension method syntax no longer names its declaring type,
+				// so nothing else in the tree asks for that namespace to be imported - and
+				// without the import the name does not resolve back to this method.
+				if (invocationExpression.GetResolveResult() is CSharpInvocationResolveResult {
+					IsExtensionMethodInvocation: true, Member: var extensionMethod
+				})
+				{
+					AddImportedNamespace(extensionMethod.DeclaringType);
+				}
+				base.VisitInvocationExpression(invocationExpression);
 			}
 
 			public override void VisitForeachStatement(ForeachStatement foreachStatement)
@@ -396,8 +411,8 @@ namespace ICSharpCode.Decompiler.CSharp.Transforms
 				if (astBuilder.NameLookupMode == NameLookupMode.Type)
 				{
 					AstType outermostType = simpleType;
-					while (outermostType.Parent is AstType)
-						outermostType = (AstType)outermostType.Parent;
+					while (outermostType.Parent is AstType parent)
+						outermostType = parent;
 					if (outermostType.Parent is TypeReferenceExpression)
 					{
 						// ILSpy uses TypeReferenceExpression in expression context even when the C# parser

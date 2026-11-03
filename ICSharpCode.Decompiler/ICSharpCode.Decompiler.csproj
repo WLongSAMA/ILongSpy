@@ -5,8 +5,9 @@
     <TargetFramework>netstandard2.0</TargetFramework>
     <!-- Carry every distribution RID in the lock file so a RID-specific `dotnet publish -r <rid>` of a
          consuming app (ILSpy) restores in locked mode (RestoreLockedMode below) on any host OS, with no
-         per-publish restore escape hatch. Must match ILSpy.csproj's RuntimeIdentifiers. -->
-    <RuntimeIdentifiers>win-x64;win-arm64;linux-x64;osx-arm64</RuntimeIdentifiers>
+         per-publish restore escape hatch. Must contain ILSpy.csproj's RuntimeIdentifiers; "any" covers the
+         framework-dependent ilspycmd RID package (dotnet pack -r any). -->
+    <RuntimeIdentifiers>win-x64;win-arm64;linux-x64;osx-arm64;any</RuntimeIdentifiers>
 
     <PackageId>ICSharpCode.Decompiler</PackageId>
     <PackageVersion>8.0.0.0-noversion</PackageVersion>
@@ -24,7 +25,6 @@
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
     <Copyright>Copyright 2011-$([System.DateTime]::Now.Year) AlphaSierraPapa</Copyright>
     <PackageTags>C# Decompiler ILSpy</PackageTags>
-    <GenerateSBOM>true</GenerateSBOM>
 
     <NeutralLanguage>en-US</NeutralLanguage>
     <GenerateAssemblyVersionAttribute>False</GenerateAssemblyVersionAttribute>
@@ -53,6 +53,16 @@
     <None Include="PackageReadme.md" Pack="true" PackagePath="\" />
     <None Include="DecompilerNuGetPackageIcon.png" Pack="true" PackagePath="\" />
   </ItemGroup>
+
+  <!-- Read by ILLink, ILC and the SDK's reference-compatibility analyzers. The SDK writes these from
+       the IsTrimmable/IsAotCompatible properties for .NETCoreApp targets only; on netstandard2.0 the
+       properties produce NETSDK1212/NETSDK1210 and nothing else, so the attributes are declared here.
+       ICSharpCode.Decompiler.AotTest keeps them honest: it publishes the assembly through ILC with
+       every trim/AOT warning as an error. -->
+  <ItemGroup>
+    <AssemblyMetadata Include="IsTrimmable" Value="True" />
+    <AssemblyMetadata Include="IsAotCompatible" Value="True" />
+  </ItemGroup>
   
   <!-- https://devblogs.microsoft.com/nuget/enable-repeatable-package-restores-using-a-lock-file/ -->
   <PropertyGroup>
@@ -69,6 +79,7 @@
 
   <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true'">
     <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+	<GenerateSBOM>true</GenerateSBOM>
   </PropertyGroup>
 
   <!-- Inject ILSpyUpdateAssemblyInfo as dependency of the GetPackageVersion
@@ -91,11 +102,11 @@
     </PackageReference>
     <PackageReference Include="System.Collections.Immutable" Version="9.0.0" />
     <PackageReference Include="System.Reflection.Metadata" Version="9.0.0" />
-    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.400">
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.403">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="10.0.400">
+    <PackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="10.0.403">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
     </PackageReference>

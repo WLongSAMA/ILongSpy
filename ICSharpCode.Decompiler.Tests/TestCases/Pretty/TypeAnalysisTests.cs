@@ -377,6 +377,38 @@ namespace ICSharpCode.Decompiler.Tests.TestCases.Pretty
 		{
 			return (int)a == 0;
 		}
+
+		public static byte BoolToIntLocalUsedTwice(byte b, bool flag)
+		{
+			int num = (flag ? 1 : 0);
+			return (byte)(b + num >> num);
+		}
+
+		public static int BoolToIntLocalAsLoopBound(object[] array, bool skipFirst)
+		{
+			int num = (skipFirst ? 1 : 0);
+			int num2 = array.Length - 1;
+			while (num2 >= num && array[num2] == null)
+			{
+				num2--;
+			}
+			return num2;
+		}
+
+		public static byte CharToByte(char c)
+		{
+			return (byte)c;
+		}
+
+		public static byte CharToByteChecked(char c)
+		{
+			return checked((byte)c);
+		}
+
+		public static UShortEnum ShortToUShortEnum(short s)
+		{
+			return (UShortEnum)s;
+		}
 	}
 
 	public enum UIntEnum : uint

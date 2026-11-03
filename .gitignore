@@ -22,6 +22,13 @@ ILSpy.Installer/wix/
 **/.vscode/
 DecompilerTests.config.json
 *.trx
+report/
 # Claude Code local session/skills directory
 /.claude/
+/.agents/
 /.understand-anything
+# Written by runuitests.ps1 and the CI test steps.
+test-results/
+# Written by nugetfuzz / decompdiff
+decompdiff-report/
+nugetfuzz-report.html
